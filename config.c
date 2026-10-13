@@ -2445,7 +2445,7 @@ parse_key_binding_section(struct context *ctx,
         char *saveptr = NULL;
         for (char *entry = strtok_r(copy, ",", &saveptr);
              entry != NULL;
-             entry = strtok_r(NULL, ", ", &saveptr))
+             entry = strtok_r(NULL, ",", &saveptr))
         {
             char *p = entry;
             while (*p == ' ' || *p == '\t')

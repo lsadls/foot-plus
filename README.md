@@ -160,6 +160,71 @@ in `/etc/xdg/foot/foot.ini` or
 Further information can be found in foot's man page `foot.ini(5)`.
 
 
+### foot-plus additions
+
+The options this fork adds, with their defaults:
+
+```ini
+[tabs]
+# show-bar=auto                 # auto|always|never
+# new-tab-position=after-current # after-current|last
+# activate-on-close=right       # right|last-used
+# shared-font-size=yes
+# confirm-close=yes
+# confirm-close-multiple=yes
+# bar-bottom=no
+# bar-height=13                 # points, or px (e.g. 16px)
+# bar-command=date +%H:%M       # stdout shown in the right half of the bar, 1 s refresh
+# bar-tab-max-width=none        # none|<percent> (e.g. 50%)|<points>|<px>
+
+[scrollback]
+# scrollbar=never               # never|auto|always
+# scrollbar-width=8
+
+[security]
+# confirm-paste=unsafe          # never|unsafe|multiline
+```
+
+New key bindings (`[key-bindings]`):
+
+```ini
+[key-bindings]
+# tab-new=Control+Shift+t
+# tab-close=Control+Shift+w
+# tab-next=Control+Next
+# tab-prev=Control+Prior
+# tab-move-left=Control+Shift+Prior
+# tab-move-right=Control+Shift+Next
+# tab-move-first=none
+# tab-move-last=none
+# tab-first=none
+# tab-last=none
+# tab-last-used=none
+# tab-close-left=none
+# tab-close-right=none
+# tab-close-others=none
+# tab-rename=none
+# tab-goto=!:Control+Shift+1,@:Control+Shift+2   # NAME:key-combo[,...]
+# transparency-toggle=none
+```
+
+`tab-goto` takes a comma-separated list of `NAME:key-combo` pairs, where
+`NAME` is a single character matching a `--tab` spec prefix (see below).
+
+Command line:
+
+```sh
+foot --tab=bash
+foot --tab=bash --tab='@:btop'            # '@' names a hidden tab
+footclient -B '!:ssh server' -B htop      # '-B' is footclient's --tab
+```
+
+`--tab=[X:]COMMAND` may be repeated; without a `NAME:` prefix the first entry
+becomes the main terminal and the rest open as extra tabs. A non-digit
+prefix marks the tab as hidden (kept out of the tab bar and out of
+tab-next/tab-prev, reachable via `tab-goto`).
+
+
 ## Troubleshooting
 
 See the [wiki](https://codeberg.org/dnkl/foot/wiki#user-content-troubleshooting)

@@ -1690,7 +1690,7 @@ e.g. *search-start=none*.
 	Switches to the tab with the given single-character name. Value
 	syntax: _NAME_:_key-combo_[_,_NAME_:_key-combo_...]. Tab names
 	come from the *--tab* spec prefix (e.g. _!_:cmus). Default:
-	_none_. Example: _tab-goto=! :ctrl+shift+1,@ :ctrl+shift+2_.
+	_none_. Example: _tab-goto=!:ctrl+shift+1,@:ctrl+shift+2_.
 
 *tab-first*, *tab-last*
 	Switches to the first, or last, tab. Default: _none_.

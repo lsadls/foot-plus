@@ -1380,6 +1380,23 @@ test_section_key_bindings_tab_goto(void)
     xassert(conf.bindings.key.arr[0].aux.ch == '!');
     xassert(conf.bindings.key.arr[1].aux.ch == '@');
 
+    /* Whitespace around the separator, and between the name and ':',
+     * must not break the entry splitting (entries are split on ',' only) */
+    config_free(&conf);
+    memset(&conf, 0, sizeof(conf));
+
+    ctx.value = "!:Control+Shift+1,@ :Control+Shift+2";
+    xassert(parse_section_key_bindings(&ctx));
+    xassert(conf.bindings.key.count == 2);
+    xassert(conf.bindings.key.arr[0].aux.ch == '!');
+    xassert(conf.bindings.key.arr[1].aux.ch == '@');
+
+    ctx.value = "! :Control+Shift+1, @ :Control+Shift+2";
+    xassert(parse_section_key_bindings(&ctx));
+    xassert(conf.bindings.key.count == 2);
+    xassert(conf.bindings.key.arr[0].aux.ch == '!');
+    xassert(conf.bindings.key.arr[1].aux.ch == '@');
+
     config_free(&conf);
 }
 
