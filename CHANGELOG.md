@@ -114,6 +114,18 @@
     tab to its right (the default), or to the most recently used tab.
   - `shared-font-size`: font size changes apply to all tabs in the
     window (the default), or only the current tab.
+- Memory management (multi-tab):
+  - `tweak.sixel-max-memory` (default 64, MiB): total budget for
+    decoded sixel pixel data per tab; the oldest images are evicted
+    when insertion would exceed the budget.
+  - `scrollback.shrink-keep` (default 200) and
+    `scrollback.shrink-after` (default 30000, ms): a background tab
+    idle+unfocused for `shrink-after` ms has its scrollback shrunk to
+    the screen plus `shrink-keep` most recent history lines, to cap
+    its memory usage. `shrink-after=0` disables it.
+  - Tabs now **share** their configuration via reference counting
+    instead of each tab deep-cloning it; a footclient's per-client
+    overrides still get a private clone.
 
 
 ### Changed

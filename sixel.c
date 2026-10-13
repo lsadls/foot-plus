@@ -193,6 +193,14 @@ sixel_invalidate_cache(struct sixel *sixel)
         pixman_image_unref(sixel->scaled.pix);
 
     free(sixel->scaled.data);
+
+    if (sixel->scaled.data != NULL) {
+        xassert(sixel->budget_bytes >= (size_t)sixel->scaled.height *
+                sixel->scaled.width * sizeof(uint32_t));
+        sixel->budget_bytes -= (size_t)sixel->scaled.height *
+            sixel->scaled.width * sizeof(uint32_t);
+    }
+
     sixel->scaled.pix = NULL;
     sixel->scaled.data = NULL;
     sixel->scaled.width = -1;
@@ -214,6 +222,11 @@ sixel_destroy(struct sixel *sixel)
     free(sixel->original.data);
     sixel->original.pix = NULL;
     sixel->original.data = NULL;
+
+    xassert(sixel->budget_bytes >= (size_t)sixel->original.height *
+            sixel->original.width * sizeof(uint32_t));
+    sixel->budget_bytes -= (size_t)sixel->original.height *
+        sixel->original.width * sizeof(uint32_t);
 }
 
 void
@@ -386,8 +399,39 @@ verify_sixels(const struct terminal *term)
 }
 
 static void
+sixel_budget_trim(struct terminal *term, size_t incoming)
+{
+    const size_t budget = term->conf->tweak.sixel_max_bytes;
+
+    size_t used = 0;
+    tll_foreach(term->grid->sixel_images, it)
+        used += it->item.budget_bytes;
+
+    /*
+     * The sixel list is sorted by end row, descending: the tail
+     * holds the oldest images. Erase oldest-first, like
+     * sixel_scroll_up() does when images scroll out of the grid.
+     *
+     * Called *before* inserting 'incoming': the new image itself is
+     * never a candidate, so it always makes it into the list - even
+     * if it alone exceeds the budget (an empty list is not useful,
+     * and the next insertion will evict it).
+     */
+    tll_rforeach(term->grid->sixel_images, it) {
+        if (used + incoming <= budget)
+            break;
+
+        used -= it->item.budget_bytes;
+        sixel_erase(term, &it->item);
+        tll_remove(term->grid->sixel_images, it);
+    }
+}
+
+static void
 sixel_insert(struct terminal *term, struct sixel sixel)
 {
+    sixel_budget_trim(term, sixel.budget_bytes);
+
     int end_row = grid_row_abs_to_sb(
         term->grid, term->rows, sixel.pos.row + sixel.rows - 1);
 
@@ -473,8 +517,8 @@ sixel_scroll_down(struct terminal *term, int rows)
 }
 
 static void
-blend_new_image_over_old(const struct terminal *term,
-                         const struct sixel *six, pixman_region32_t *six_rect,
+blend_new_image_over_old(struct terminal *term,
+                         struct sixel *six, pixman_region32_t *six_rect,
                          int row, int col, pixman_image_t **pix, bool *opaque)
 {
     xassert(pix != NULL);
@@ -648,6 +692,13 @@ blend_new_image_over_old(const struct terminal *term,
     pixman_region32_fini(&uninitialized);
 
     /* Use the new pixmap in place of the old one */
+    const size_t old_bytes = (size_t)six->original.width *
+        six->original.height * sizeof(uint32_t);
+    const size_t new_bytes = (size_t)new_width * new_height * sizeof(uint32_t);
+
+    xassert(six->budget_bytes >= old_bytes);
+    six->budget_bytes = six->budget_bytes - old_bytes + new_bytes;
+
     free(pixman_image_get_data(*pix));
     pixman_image_unref(*pix);
     *pix = pix2;
@@ -753,6 +804,7 @@ sixel_overwrite(struct terminal *term, struct sixel *six,
                 .width = -1,
                 .height = -1,
             },
+            .budget_bytes = (size_t)new_width * new_height * sizeof(uint32_t),
         };
 
 #if defined(_DEBUG)
@@ -1038,6 +1090,7 @@ sixel_sync_cache(const struct terminal *term, struct sixel *six)
         six->scaled.pix = six->pix = scaled_pix;
         six->scaled.width = six->width = scaled_width;
         six->scaled.height = six->height = scaled_height;
+        six->budget_bytes += (size_t)scaled_width * scaled_height * sizeof(uint32_t);
     }
 }
 
@@ -1298,6 +1351,7 @@ sixel_unhook(struct terminal *term)
                 .width = -1,
                 .height = -1,
             },
+            .budget_bytes = (size_t)width * height * sizeof(uint32_t),
         };
 
         xassert(image.rows <= term->grid->num_rows);

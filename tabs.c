@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/timerfd.h>
 
 #include <xkbcommon/xkbcommon-compose.h>
 
@@ -29,10 +30,9 @@
 static void
 tab_shutdown_cb(void *data, int exit_code)
 {
-    /* Tabs own a private copy of the configuration */
+    /* Tabs share the configuration via refcounting */
     struct config *conf = data;
-    config_free(conf);
-    free(conf);
+    config_unref(conf);
 }
 
 bool
@@ -44,11 +44,11 @@ tab_new(struct terminal *term)
         return false;
 
     /*
-     * The configuration may be owned by another terminal instance
-     * (e.g. a footclient instance with command line overrides), that
-     * may exit before this tab does.
+     * Tabs share the terminal's config; the refcount keeps it alive
+     * until the last tab using it exits. A per-client override clone
+     * is shared the same way, but only among that client's own tabs.
      */
-    struct config *conf = config_clone(term->conf);
+    struct config *conf = config_ref((struct config *)term->conf);
 
     /* New tabs always start in the home directory, not the current
      * tab's CWD (which would inherit whatever directory the shell in
@@ -63,8 +63,7 @@ tab_new(struct terminal *term)
 
     if (tab == NULL) {
         LOG_ERR("failed to instantiate new tab");
-        config_free(conf);
-        free(conf);
+        config_unref(conf);
         return false;
     }
 
@@ -137,6 +136,15 @@ switch_seat_focus(struct terminal *old, struct terminal *new)
             term_kbd_focus_out(old);
         term_visual_focus_out(old);
     }
+
+    /*
+     * The old tab is now in the background: start its
+     * scrollback-shrink countdown. tab_deactivated() is a no-op if
+     * it already armed the timer (e.g. when the whole window lost
+     * focus earlier); the countdown is re-armed from scratch.
+     */
+    if (!old->shutdown.in_progress && old != new)
+        tab_deactivated(old);
 }
 
 void
@@ -149,6 +157,15 @@ tab_activate(struct terminal *new)
         return;
 
     LOG_DBG("activating tab %p (previous: %p)", (void *)new, (void *)old);
+
+    /* Disarm the new tab's scrollback-shrink timer before anything
+     * else: from this point on it is in the foreground, and its
+     * history must not be dropped */
+    if (new->shrink_fd >= 0) {
+        const struct itimerspec disarm = {{0}};
+        if (timerfd_settime(new->shrink_fd, 0, &disarm, NULL) < 0)
+            LOG_ERRNO("failed to disarm scrollback shrink timer");
+    }
 
     new->tab.activated = ++win->tab_activations;
     new->tab.attention = false;
@@ -203,6 +220,21 @@ tab_activate(struct terminal *new)
         if (it->item.mouse_focus == new)
             term_xcursor_update_for_seat(new, &it->item);
     }
+}
+
+void
+tab_deactivated(struct terminal *term)
+{
+    xassert(term != NULL);
+    xassert(term->window != NULL);
+    xassert(term->window->term != term);
+
+    /*
+     * The window's active tab has just changed (or focus moved to
+     * another tab): this tab is now in the background, so start its
+     * scrollback-shrink countdown.
+     */
+    term_shrink_scrollback_maybe(term);
 }
 
 struct terminal *

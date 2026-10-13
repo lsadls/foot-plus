@@ -126,8 +126,9 @@ instance_destroy(struct terminal_instance *instance, int exit_code)
     /* TODO: clone server conf completely, so that we can just call
      * conf_destroy() here */
     if (instance->conf != NULL) {
-        config_free(instance->conf);
-        free(instance->conf);
+        /* Only a per-client private clone; the shared server conf is
+         * not owned by the instance and is not unref'd here */
+        config_unref(instance->conf);
     }
     free(instance);
 
@@ -446,6 +447,9 @@ fdm_client(struct fdm *fdm, int fd, int events, void *data)
         }
     }
 
+    /* The instance owns the (clone) ref, released in
+     * instance_destroy(). The main terminal shares that same ref - it
+     * must not take an additional one, or the clone would leak. */
     instance->terminal = term_init(
         conf != NULL ? conf : server->conf,
         server->fdm, server->reaper, server->wayl, "footclient", cwd, token,
@@ -481,6 +485,9 @@ fdm_client(struct fdm *fdm, int fd, int events, void *data)
             .conf = NULL,
         };
 
+        /* The extra tab takes its own ref on the shared server conf
+         * (or the client's private clone) inside term_init_extra_tab();
+         * it is released when the tab exits */
         tab_instance->terminal = term_init_extra_tab(
             conf != NULL ? conf : server->conf,
             server->fdm, server->reaper, server->wayl,

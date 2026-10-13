@@ -233,6 +233,10 @@ enum underline_style {
 
 struct config {
     char *conf_path;
+
+    /* Number of owners of this heap-allocated config; see
+     * config_ref()/config_unref() */
+    size_t refcnt;
     char *term;
     char *shell;
     char *title;
@@ -344,6 +348,12 @@ struct config {
             SCROLLBAR_ALWAYS,
         } scrollbar;
         uint16_t scrollbar_width;
+
+        /* Background-tab scrollback shrinking: after shrink_after_ms
+         * without PTY output while unfocused, shrink the grid down to
+         * "screen + shrink_keep_lines history lines". 0 disables. */
+        size_t shrink_keep_lines;
+        uint32_t shrink_after_ms;
     } scrollback;
 
     struct {
@@ -474,6 +484,9 @@ struct config {
         bool box_drawing_solid_shades;
         bool font_monospace_warn;
         bool sixel;
+        /* Total pixel-data budget for decoded sixels, in bytes. The
+         * oldest sixels are erased when insertion would exceed this. */
+        size_t sixel_max_bytes;
         enum shm_bit_depth surface_bit_depth;
         uint32_t min_stride_alignment;
         bool preapply_damage;
@@ -539,6 +552,13 @@ bool config_load(
     bool as_server);
 void config_free(struct config *conf);
 struct config *config_clone(const struct config *old);
+
+/* Reference counting for heap-allocated configs shared by multiple
+ * terminals (tabs). config_load() sets the initial count to 1;
+ * config_clone() returns a fresh config with count 1. config_free()
+ * is the raw destructor - use config_unref() for shared configs. */
+struct config *config_ref(struct config *conf);
+void config_unref(struct config *conf);
 
 bool config_font_parse(const char *pattern, struct config_font *font);
 void config_font_list_destroy(struct config_font_list *font_list);

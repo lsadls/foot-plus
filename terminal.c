@@ -32,6 +32,7 @@
 #include "grid.h"
 #include "ime.h"
 #include "input.h"
+#include "macros.h"
 #include "notify.h"
 #include "quirks.h"
 #include "reaper.h"
@@ -50,6 +51,8 @@
 #include "xsnprintf.h"
 
 #define PTMX_TIMING 0
+
+static void term_shrink_scrollback(struct terminal *term);
 
 static void
 enqueue_data_for_slave(const void *data, size_t len, size_t offset,
@@ -314,6 +317,12 @@ fdm_ptmx(struct fdm *fdm, int fd, int events, void *data)
             term->tab.output_pending = true;
             render_refresh_tab_bar(term->window);
         }
+
+        /* Don't shrink the scrollback while the tab is still
+         * producing output: push the deadline out by another
+         * shrink_after_ms. No-op unless the tab is in the background
+         * (the timer is disarmed otherwise) */
+        term_shrink_scrollback_maybe(term);
     }
 
     if (!term->render.app_sync_updates.enabled) {
@@ -456,6 +465,38 @@ fdm_flash(struct fdm *fdm, int fd, int events, void *data)
     // to commit the main surface for the compositor to acknowledge the new
     // overlay state.
     wl_surface_commit(term->window->surface.surf);
+    return true;
+}
+
+/*
+ * Background tab scrollback shrinking timer. Never armed for the
+ * active tab; armed from term_visual_focus_out() and tab_deactivated(),
+ * and re-armed on PTY output (fdm_ptmx). The callback and the tab
+ * activation path both run in the main event loop, so the two cannot
+ * race: the timer either fires while the tab is still in the
+ * background (and the grid is shrunk), or it has been disarmed by
+ * term_shrink_scrollback_maybe() during tab_activate().
+ */
+static bool
+fdm_shrink_scrollback(struct fdm *fdm, int fd, int events, void *data)
+{
+    if (events & EPOLLHUP)
+        return false;
+
+    struct terminal *term = data;
+    uint64_t expiration_count;
+    ssize_t ret = read(
+        term->shrink_fd, &expiration_count, sizeof(expiration_count));
+
+    if (ret < 0) {
+        if (errno == EAGAIN)
+            return true;
+
+        LOG_ERRNO("failed to read scrollback shrink timer");
+        return false;
+    }
+
+    term_shrink_scrollback(term);
     return true;
 }
 
@@ -1249,6 +1290,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
     int title_update_fd = -1;
     int icon_update_fd = -1;
     int app_id_update_fd = -1;
+    int shrink_fd = -1;
 
     struct terminal *term = malloc(sizeof(*term));
     if (unlikely(term == NULL)) {
@@ -1296,6 +1338,12 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         goto close_fds;
     }
 
+    if ((shrink_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)) < 0)
+    {
+        LOG_ERRNO("failed to create scrollback shrink timer FD");
+        goto close_fds;
+    }
+
     if (ioctl(ptmx, (unsigned int)TIOCSWINSZ,
               &(struct winsize){.ws_row = 24, .ws_col = 80}) < 0)
     {
@@ -1328,7 +1376,8 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         !fdm_add(fdm, app_sync_updates_fd, EPOLLIN, &fdm_app_sync_updates_timeout, term) ||
         !fdm_add(fdm, title_update_fd, EPOLLIN, &fdm_title_update_timeout, term) ||
         !fdm_add(fdm, icon_update_fd, EPOLLIN, &fdm_icon_update_timeout, term) ||
-        !fdm_add(fdm, app_id_update_fd, EPOLLIN, &fdm_app_id_update_timeout, term))
+        !fdm_add(fdm, app_id_update_fd, EPOLLIN, &fdm_app_id_update_timeout, term) ||
+        !fdm_add(fdm, shrink_fd, EPOLLIN, &fdm_shrink_scrollback, term))
     {
         goto err;
     }
@@ -1350,7 +1399,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
     *term = (struct terminal) {
         .fdm = fdm,
         .reaper = reaper,
-        .conf = conf,
+        .conf = (struct config *)conf,
         .slave = -1,
         .ptmx = ptmx,
         .ptmx_buffers = tll_init(),
@@ -1374,6 +1423,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         .scale = 1.,
         .scale_before_unmap = -1,
         .flash = {.fd = flash_fd},
+        .shrink_fd = shrink_fd,
         .blink = {.fd = -1},
         .vt = {
             .state = 0,  /* STATE_GROUND */
@@ -1569,6 +1619,10 @@ err:
 close_fds:
     close(ptmx);
     fdm_del(fdm, flash_fd);
+    if (shrink_fd >= 0) {
+        fdm_del(fdm, shrink_fd);
+        close(shrink_fd);
+    }
     fdm_del(fdm, delay_lower_fd);
     fdm_del(fdm, delay_upper_fd);
     fdm_del(fdm, app_sync_updates_fd);
@@ -1916,6 +1970,11 @@ term_destroy(struct terminal *term)
     fdm_del(term->fdm, term->cursor_blink.fd);
     fdm_del(term->fdm, term->blink.fd);
     fdm_del(term->fdm, term->flash.fd);
+    if (term->shrink_fd >= 0) {
+        fdm_del(term->fdm, term->shrink_fd);
+        close(term->shrink_fd);
+        term->shrink_fd = -1;
+    }
     fdm_del(term->fdm, term->ptmx);
     if (term->shutdown.terminate_timeout_fd >= 0)
         fdm_del(term->fdm, term->shutdown.terminate_timeout_fd);
@@ -3402,6 +3461,123 @@ term_visual_focus_out(struct terminal *term)
     term->visual_focus = false;
     term_cursor_blink_update(term);
     render_refresh_csd(term);
+
+    /* Window-level focus-out: start the scrollback-shrink countdown
+     * (no-op if the tab is already in the background - tab_deactivated()
+     * armed it then) */
+    term_shrink_scrollback_maybe(term);
+}
+
+/*
+ * Shrink the scrollback of a background tab, to cap its memory usage.
+ * The scrollback is the only copy of the output history - it is never
+ * re-sent by the PTY - so the grid is *shrunk*, not cleared: the most
+ * recent 'keep' lines (plus the screen itself) are kept, and the
+ * oldest lines are dropped. New output re-populates the history as
+ * usual. If the tab is activated again before the timer expires, the
+ * shrink is disarmed and nothing is lost.
+ *
+ * Arms or re-arms the timer, for as long as the tab is in the
+ * background. No-op otherwise (active tab, disabled, or in a mode
+ * that must not be shrunk).
+ */
+void
+term_shrink_scrollback_maybe(struct terminal *term)
+{
+    if (term->conf->scrollback.shrink_after_ms == 0)
+        return;  /* Disabled */
+
+    if (term->shrink_fd < 0)
+        return;
+
+    /* Only background tabs; the active tab is never armed */
+    if (term->window == NULL || term->window->term == term)
+        return;
+
+    /* These modes use the normal grid via the render path; don't
+     * yank rows out from under them */
+    if (term->is_searching || urls_mode_is_active(term) ||
+        term->interactive_resizing.grid != NULL)
+    {
+        return;
+    }
+
+    const struct itimerspec timer = {
+        .it_value = {
+            .tv_sec = term->conf->scrollback.shrink_after_ms / 1000,
+            .tv_nsec = (term->conf->scrollback.shrink_after_ms % 1000) * 1000000,
+        },
+    };
+
+    if (timerfd_settime(term->shrink_fd, 0, &timer, NULL) < 0)
+        LOG_ERRNO("failed to arm scrollback shrink timer");
+}
+
+/*
+ * FDM timer callback: when the shrink countdown expires, do the
+ * actual shrink. Only ever armed for background tabs; see
+ * term_shrink_scrollback_maybe().
+ */
+static void
+term_shrink_scrollback(struct terminal *term)
+{
+    if (term->conf->scrollback.shrink_after_ms == 0)
+        return;  /* Disabled */
+
+    /* Defensive; the timer is disarmed on activation */
+    if (term->window == NULL || term->window->term == term)
+        return;
+
+    /* Only the normal grid holds scrollback */
+    if (term->grid != &term->normal)
+        return;
+
+    if (term->is_searching || urls_mode_is_active(term) ||
+        term->interactive_resizing.grid != NULL)
+    {
+        return;
+    }
+
+    /*
+     * How much history to keep. Never more than the configured
+     * scrollback, and never less than one grid slot. The grid is
+     * allocated with a power-of-two row count (see render.c's
+     * resize logic), and the same formula is used here.
+     */
+    const size_t scrollback = term->render.scrollback_lines;
+    size_t keep = min(term->conf->scrollback.shrink_keep_lines, scrollback);
+    keep = max(keep, (size_t)1);
+
+    /* Same as render.c: smallest power of two >= keep + screen rows */
+    const int need = (int)keep + term->rows;
+    const int target_rows = 1 << (32 - __builtin_clz(need));
+
+    if (term->normal.num_rows <= target_rows)
+        return;  /* Already small enough; keep is idempotent */
+
+    LOG_DBG("scrollback shrink: %d rows -> %d rows "
+            "(keeping %zu history lines)",
+            term->normal.num_rows, target_rows, keep);
+
+    /*
+     * Resize the grid, reflowing the content. The rows that don't
+     * fit are dropped from the oldest end, which is exactly the
+     * "keep the most recent history" semantics. Selection tracking
+     * points are passed so the selection is clamped, not corrupted.
+     */
+    struct coord *const tracking_points[] = {
+        &term->selection.coords.start,
+        &term->selection.coords.end,
+    };
+
+    grid_resize_and_reflow(
+        &term->normal, term, target_rows, term->cols,
+        term->rows, term->rows,
+        term->selection.coords.end.row >= 0 ? ALEN(tracking_points) : 0,
+        tracking_points);
+
+    /* The viewport may have scrolled away; pin it to the bottom */
+    term->normal.view = term->normal.offset;
 }
 
 void
@@ -4948,6 +5124,24 @@ term_theme_get(const struct terminal *term)
         : &term->conf->colors_light;
 }
 
+struct extra_tab_shutdown {
+    void (*cb)(void *data, int exit_code);
+    void *data;
+    struct config *conf;
+};
+
+static void
+tab_extra_shutdown_cb(void *data, int exit_code)
+{
+    struct extra_tab_shutdown *chain = data;
+
+    if (chain->cb != NULL)
+        chain->cb(chain->data, exit_code);
+
+    config_unref(chain->conf);
+    free(chain);
+}
+
 struct terminal *
 term_init_extra_tab(
     const struct config *conf, struct fdm *fdm, struct reaper *reaper,
@@ -4967,14 +5161,28 @@ term_init_extra_tab(
         cmd = spec + 2;
     }
 
-    struct config *tab_conf = config_clone(conf);
+    /*
+     * Share the config with the caller via refcounting. The tab owns
+     * the ref and releases it on exit; if the caller passed a
+     * shutdown_cb (e.g. the server, tracking the owning instance),
+     * it is chained and called first.
+     */
+    struct config *tab_conf = config_ref((struct config *)conf);
+
+    struct extra_tab_shutdown *chained = xmalloc(sizeof(*chained));
+    *chained = (struct extra_tab_shutdown){
+        .cb = shutdown_cb,
+        .data = shutdown_data,
+        .conf = tab_conf,
+    };
 
     /* Empty command -> default shell */
     char **tab_argv = NULL;
     int tab_argc = 0;
     if (*cmd != '\0' && !tokenize_cmdline(cmd, &tab_argv)) {
         LOG_ERR("tab: failed to tokenize: %s", cmd);
-        config_free(tab_conf);
+        free(chained);
+        config_unref(tab_conf);
         return NULL;
     }
     if (tab_argv != NULL) {
@@ -4984,7 +5192,8 @@ term_init_extra_tab(
 
     struct terminal *tab = term_init(
         tab_conf, fdm, reaper, wayl, foot_exe, cwd, token, NULL,
-        tab_argc, tab_argv, NULL, tab_window, shutdown_cb, shutdown_data);
+        tab_argc, tab_argv, NULL, tab_window,
+        &tab_extra_shutdown_cb, chained);
 
     /* slave_spawn() consumed argv in the forked slave; free our copy */
     if (tab_argv != NULL) {
@@ -4995,7 +5204,8 @@ term_init_extra_tab(
 
     if (tab == NULL) {
         LOG_ERR("failed to instantiate extra tab: %s", cmd);
-        config_free(tab_conf);
+        free(chained);
+        config_unref(tab_conf);
         return NULL;
     }
 

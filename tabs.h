@@ -38,6 +38,14 @@ void tab_cycle(struct wl_window *win, int direction);
 void tab_activate_last_used(struct wl_window *win);
 
 /*
+ * Called when a tab stops being the window's active tab (or loses
+ * visual focus): disarms its scrollback-shrink timer if focus moved
+ * to another tab in the same window. Window-level focus-out goes via
+ * term_visual_focus_out() instead.
+ */
+void tab_deactivated(struct terminal *term);
+
+/*
  * Marks a background tab in the tab bar, until it is activated.
  * Called on bell, and on desktop notifications.
  */

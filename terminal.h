@@ -202,6 +202,11 @@ struct sixel {
         int width;
         int height;
     } scaled;
+
+    /* Bytes of allocated pixel data (original + scaled), tracked for
+     * term->conf->tweak.sixel_max_bytes accounting. Not carried by
+     * copy; maintained by sixel.c at allocation/free sites. */
+    size_t budget_bytes;
 };
 
 enum kitty_kbd_flags {
@@ -612,6 +617,15 @@ struct terminal {
         bool active;
         int fd;
     } flash;
+
+    /*
+     * Shrinks the scrollback of *background* tabs, to cap their
+     * memory usage. Armed while the tab is unfocused, and
+     * re-armed on PTY output (in fdm_ptmx), so that it only
+     * expires after shrink_after_ms of inactivity. See
+     * term_shrink_scrollback().
+     */
+    int shrink_fd;
 
     struct {
         enum { BLINK_ON, BLINK_OFF } state;
@@ -1048,6 +1062,9 @@ void term_osc8_close(struct terminal *term);
 
 bool term_ptmx_pause(struct terminal *term);
 bool term_ptmx_resume(struct terminal *term);
+
+/* See terminal.c: arms the timer only for background tabs */
+void term_shrink_scrollback_maybe(struct terminal *term);
 
 void term_enable_size_notifications(struct terminal *term);
 void term_disable_size_notifications(struct terminal *term);

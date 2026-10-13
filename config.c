@@ -1342,6 +1342,17 @@ parse_section_scrollback(struct context *ctx)
     else if (streq(key, "scrollbar-width"))
         return value_to_uint16(ctx, 10, &conf->scrollback.scrollbar_width);
 
+    else if (streq(key, "shrink-keep")) {
+        uint32_t keep;
+        if (!value_to_uint32(ctx, 10, &keep))
+            return false;
+        conf->scrollback.shrink_keep_lines = keep;
+        return true;
+    }
+
+    else if (streq(key, "shrink-after"))
+        return value_to_uint32(ctx, 10, &conf->scrollback.shrink_after_ms);
+
     else {
         LOG_CONTEXTUAL_ERR("not a valid option: %s", key);
         return false;
@@ -3089,6 +3100,15 @@ parse_section_tweak(struct context *ctx)
     else if (streq(key, "sixel"))
         return value_to_bool(ctx, &conf->tweak.sixel);
 
+    else if (streq(key, "sixel-max-memory")) {
+        uint32_t mb;
+        if (!value_to_uint32(ctx, 10, &mb))
+            return false;
+
+        conf->tweak.sixel_max_bytes = (size_t)mb * 1024 * 1024;
+        return true;
+    }
+
     else if (streq(key, "dim-amount"))
         return value_to_float(ctx, &conf->dim.amount);
 
@@ -3727,6 +3747,7 @@ config_load(struct config *conf, const char *conf_path,
     enum fcft_capabilities fcft_caps = fcft_capabilities();
 
     *conf = (struct config) {
+        .refcnt = 1,
         .conf_path = (conf_path ? xstrdup(conf_path) : NULL),
         .term = xstrdup(FOOT_DEFAULT_TERM),
         .shell = get_shell(),
@@ -3798,6 +3819,8 @@ config_load(struct config *conf, const char *conf_path,
             .multiplier = 3.,
             .scrollbar = SCROLLBAR_NEVER,
             .scrollbar_width = 8,
+            .shrink_keep_lines = 200,
+            .shrink_after_ms = 30000,
         },
         .colors_dark = {
             .fg = default_foreground,
@@ -3881,6 +3904,7 @@ config_load(struct config *conf, const char *conf_path,
             .box_drawing_solid_shades = true,
             .font_monospace_warn = true,
             .sixel = true,
+            .sixel_max_bytes = 64 * 1024 * 1024,
             .surface_bit_depth = SHM_BITS_AUTO,
             .min_stride_alignment = 256,
             .preapply_damage = true,
@@ -4163,6 +4187,7 @@ config_clone(const struct config *old)
     struct config *conf = xmalloc(sizeof(*conf));
     *conf = *old;
 
+    conf->refcnt = 1;
     conf->conf_path = (old->conf_path ? xstrdup(old->conf_path) : NULL);
     conf->term = xstrdup(old->term);
     conf->shell = xstrdup(old->shell);
@@ -4312,6 +4337,24 @@ config_free(struct config *conf)
 
     free(conf->utmp_helper_path);
     user_notifications_free(&conf->notifications);
+}
+
+struct config *
+config_ref(struct config *conf)
+{
+    xassert(conf->refcnt > 0);
+    conf->refcnt++;
+    return conf;
+}
+
+void
+config_unref(struct config *conf)
+{
+    xassert(conf->refcnt > 0);
+    if (--conf->refcnt == 0) {
+        config_free(conf);
+        free(conf);
+    }
 }
 
 bool
