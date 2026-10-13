@@ -2,7 +2,7 @@
 
 Fast, lightweight and minimalistic Wayland terminal emulator — an
 **unofficial fork of [foot](https://codeberg.org/dnkl/foot)** that adds
-tabs, based on foot 1.28.0.
+tabs and other stuff, based on foot 1.28.0.
 
 > [!NOTE]
 > **foot-plus** is a personal fork; it is not affiliated with, or supported
@@ -85,7 +85,7 @@ tabs, based on foot 1.28.0.
 > # tab-close-right=none
 > # tab-close-others=none
 > # tab-rename=none
-> # tab-goto=!:Control+Shift+1,@:Control+Shift+2   # NAME:key-combo[,...]
+> # tab-goto=1:Control+Shift+1,a:Control+Shift+a   # NAME:key-combo[,...]
 > # transparency-toggle=none
 > ```
 >
