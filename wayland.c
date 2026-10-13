@@ -33,6 +33,7 @@
 #include "selection.h"
 #include "shm.h"
 #include "shm-formats.h"
+#include "tabs.h"
 #include "util.h"
 #include "xmalloc.h"
 
@@ -66,9 +67,36 @@ csd_reload_font(struct wl_window *win, float old_scale)
     win->csd.font = fcft_from_name(conf->csd.font.count, patterns, pixelsize);
 }
 
-static void
-csd_instantiate(struct wl_window *win)
+void
+wayl_win_tab_bar_reload_font(struct wl_window *win)
 {
+    const struct terminal *term = win->term;
+    const struct config *conf = term->conf;
+    const float scale = term->scale;
+
+    if (win->tab_bar.font != NULL && win->tab_bar.font_scale == scale)
+        return;
+
+    fcft_destroy(win->tab_bar.font);
+
+    const char *patterns[conf->csd.font.count];
+    for (size_t i = 0; i < conf->csd.font.count; i++)
+        patterns[i] = conf->csd.font.arr[i].pattern;
+
+    char pixelsize[32];
+    /* Size the bar font so its height (ascent+descent) fills the strip:
+     * pixelsize ≈ font height for these fonts. Strip height is already
+     * a multiple of the scale (render.c rounds it up). */
+    const int strip_px = term_pt_or_px_as_pixels(term, &term->conf->tabs.bar_height);
+    snprintf(pixelsize, sizeof(pixelsize), "pixelsize=%u",
+             max(1, strip_px));
+
+    win->tab_bar.font = fcft_from_name(conf->csd.font.count, patterns, pixelsize);
+    win->tab_bar.font_scale = scale;
+}
+
+static void
+csd_instantiate(struct wl_window *win){
     struct wayland *wayl = win->term->wl;
     xassert(wayl != NULL);
 
@@ -413,9 +441,25 @@ static const struct wl_seat_listener seat_listener = {
 static void
 update_term_for_output_change(struct terminal *term)
 {
+    /* Background tabs are synced when they are activated */
+    if (term->window->term != term)
+        return;
+
     const float old_scale = term->scale;
-    const float logical_width = term->width / old_scale;
-    const float logical_height = term->height / old_scale;
+    wayl_win_tab_sync_size(
+        term, term->width / old_scale, term->height / old_scale, false);
+}
+
+/*
+ * Update a terminal's scale and fonts, and resize it to the
+ * specified logical size. Used both when the window changes outputs,
+ * and when a (possibly stale) tab is activated.
+ */
+void
+wayl_win_tab_sync_size(struct terminal *term, float logical_width,
+                       float logical_height, bool force)
+{
+    const float old_scale = term->scale;
 
     /* Note: order matters! term_update_scale() must come first */
     bool scale_updated = term_update_scale(term);
@@ -424,7 +468,7 @@ update_term_for_output_change(struct terminal *term)
 
     csd_reload_font(term->window, old_scale);
 
-    enum resize_options resize_opts = RESIZE_KEEP_GRID;
+    enum resize_options resize_opts = force ? RESIZE_FORCE : RESIZE_KEEP_GRID;
 
     if (fonts_updated) {
         /*
@@ -434,7 +478,7 @@ update_term_for_output_change(struct terminal *term)
          * render_resize() normally shortcuts and returns early).
          */
         resize_opts |= RESIZE_FORCE;
-    } else if (!scale_updated) {
+    } else if (!scale_updated && !force) {
         /* No need to resize if neither scale nor fonts have changed */
         return;
     } else if (term->conf->dpi_aware) {
@@ -971,9 +1015,8 @@ static void
 xdg_toplevel_close(void *data, struct xdg_toplevel *xdg_toplevel)
 {
     struct wl_window *win = data;
-    struct terminal *term = win->term;
     LOG_DBG("xdg-toplevel: close");
-    term_shutdown(term);
+    tab_request_close_window(win);
 }
 
 #if defined(XDG_TOPLEVEL_CONFIGURE_BOUNDS_SINCE_VERSION)
@@ -1178,8 +1221,36 @@ xdg_surface_configure(void *data, struct xdg_surface *xdg_surface,
         wl_surface_commit(win->surface.surf);
     }
 
-    if (wasnt_configured)
-        term_window_configured(term);
+    if (wasnt_configured) {
+        /* Enable the PTY of every tab in the window - extra tabs
+         * created before/after this event (e.g. --tab) don't get a
+         * configure of their own */
+        const struct terminal *cur = win->term;
+        const float logical_width = cur->scale > 0. ? cur->width / cur->scale : 0.;
+        const float logical_height = cur->scale > 0. ? cur->height / cur->scale : 0.;
+
+        tll_foreach(win->tabs, it) {
+            struct terminal *tab = it->item;
+
+            /* Size the grid before we start reading from the PTY
+             * (same as tab_new does for regular tabs) */
+            if (tab->grid->num_rows == 0 && logical_width > 0. && logical_height > 0.)
+                wayl_win_tab_sync_size(tab, logical_width, logical_height, true);
+
+            term_window_configured(tab);
+        }
+
+        /* If the initially active tab is hidden (e.g. the first
+         * --tab entry), show the first visible tab instead */
+        if (win->term->tab.hidden) {
+            tll_foreach(win->tabs, it) {
+                if (!it->item->tab.hidden) {
+                    tab_activate(it->item);
+                    break;
+                }
+            }
+        }
+    }
 }
 
 static const struct xdg_surface_listener xdg_surface_listener = {
@@ -2066,10 +2137,15 @@ wayl_win_init(struct terminal *term, const char *token)
     }
 
     win->term = term;
+    tll_push_back(win->tabs, term);
     win->csd_mode = CSD_UNKNOWN;
     win->csd.move_timeout_fd = -1;
     win->resize_timeout_fd = -1;
     win->scale = -1.;
+    /* calloc() gives 0, which is a valid fd; mark as "not running" */
+    win->tabbar_cmd.pid = -1;
+    win->tabbar_cmd.stdout_fd = -1;
+    win->tabbar_cmd.refresh_fd = -1;
 
     win->wm_capabilities.maximize = true;
     win->wm_capabilities.minimize = true;
@@ -2215,6 +2291,9 @@ wayl_win_init(struct terminal *term, const char *token)
         break;
     }
 
+    /* Spawned once per window, and shared by all its tabs */
+    tabbar_cmd_init(win);
+
     return win;
 
 out:
@@ -2230,6 +2309,9 @@ wayl_win_destroy(struct wl_window *win)
         return;
 
     struct terminal *term = win->term;
+
+    /* Spawned by wayl_win_init(); kill it, or it outlives the window */
+    tabbar_cmd_destroy(win);
 
     if (win->csd.move_timeout_fd != -1)
         close(win->csd.move_timeout_fd);
@@ -2275,6 +2357,16 @@ wayl_win_destroy(struct wl_window *win)
         wl_surface_commit(win->overlay.surface.surf);
     }
 
+    if (win->tab_bar.surface.surface.surf != NULL) {
+        wl_surface_attach(win->tab_bar.surface.surface.surf, NULL, 0, 0);
+        wl_surface_commit(win->tab_bar.surface.surface.surf);
+    }
+
+    if (win->scrollbar.surface.surface.surf != NULL) {
+        wl_surface_attach(win->scrollbar.surface.surface.surf, NULL, 0, 0);
+        wl_surface_commit(win->scrollbar.surface.surface.surf);
+    }
+
     /* Scrollback search */
     if (win->search.surface.surf != NULL) {
         wl_surface_attach(win->search.surface.surf, NULL, 0, 0);
@@ -2317,6 +2409,10 @@ wayl_win_destroy(struct wl_window *win)
     wayl_win_subsurface_destroy(&win->scrollback_indicator);
     wayl_win_subsurface_destroy(&win->render_timer);
     wayl_win_subsurface_destroy(&win->overlay);
+    wayl_win_subsurface_destroy(&win->tab_bar.surface);
+    wayl_win_subsurface_destroy(&win->scrollbar.surface);
+    fcft_destroy(win->tab_bar.font);
+    tll_free(win->tabs);
 
     shm_purge(term->render.chains.search);
     shm_purge(term->render.chains.scrollback_indicator);
@@ -2324,6 +2420,8 @@ wayl_win_destroy(struct wl_window *win)
     shm_purge(term->render.chains.grid);
     shm_purge(term->render.chains.url);
     shm_purge(term->render.chains.csd);
+    shm_purge(term->render.chains.tab_bar);
+    shm_purge(term->render.chains.scrollbar);
 
     tll_foreach(win->xdg_tokens, it) {
         xdg_activation_token_v1_destroy(it->item->xdg_token);
@@ -2581,7 +2679,7 @@ wayl_win_alpha_changed(struct wl_window *win)
      * When fullscreened, transparency is disabled (see render.c).
      * Update the opaque region to match.
      */
-    const bool is_opaque = term->colors.alpha == 0xffff || win->is_fullscreen;
+    const bool is_opaque = term->colors.alpha == 0xffff || wayl_win_ignore_alpha(win);
 
     if (is_opaque) {
         struct wl_region *region = wl_compositor_create_region(wayl->compositor);

@@ -55,6 +55,12 @@ static void
 enter(void *data, struct zwp_text_input_v3 *zwp_text_input_v3,
       struct wl_surface *surface)
 {
+    if (unlikely(surface == NULL)) {
+        /* Seen on Hyprland */
+        LOG_WARN("compositor sent ime_enter event with a NULL surface");
+        return;
+    }
+
     struct seat *seat = data;
     struct wl_window *win = wl_surface_get_user_data(surface);
     struct terminal *term = win->term;

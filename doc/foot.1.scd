@@ -100,6 +100,17 @@ the foot command line
 	Initial working directory for the client application. Default:
 	_CWD of foot_.
 
+*--tab*=[_X_:]_COMMAND_[_,_COMMAND_...]
+	Open additional tabs in the new window, each running _COMMAND_.
+	Entries prefixed with a single character (e.g. _1_:zsh) are named
+	tabs; a digit prefix creates a regular visible numbered tab,
+	while a non-digit prefix (e.g. _!_:cmus) creates a hidden tab -
+	not shown in the tab bar and skipped by tab-next/tab-prev,
+	reachable only via the *tab-goto* key binding. An empty command
+	runs the default shell. May be given multiple times, or as a
+	comma separated list. Example:
+	*foot --tab*=_!:cmus,1:zsh,2:zsh_
+
 *-s*,*--server*[=_PATH_|_FD_]
 	Run as a server. In this mode, a single foot instance hosts
 	multiple terminals (windows). Use *footclient*(1) to launch new

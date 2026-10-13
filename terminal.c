@@ -36,11 +36,13 @@
 #include "quirks.h"
 #include "reaper.h"
 #include "render.h"
+#include "tokenize.h"
 #include "selection.h"
 #include "shm.h"
 #include "sixel.h"
 #include "slave.h"
 #include "spawn.h"
+#include "tabs.h"
 #include "url-mode.h"
 #include "util.h"
 #include "vt.h"
@@ -272,6 +274,7 @@ fdm_ptmx(struct fdm *fdm, int fd, int events, void *data)
 
     uint8_t buf[24 * 1024];
     const size_t max_iterations = !hup ? 10 : SIZE_MAX;
+    bool got_output = false;
 
     for (size_t i = 0; i < max_iterations && pollin; i++) {
         xassert(pollin);
@@ -295,6 +298,22 @@ fdm_ptmx(struct fdm *fdm, int fd, int events, void *data)
 
         xassert(term->interactive_resizing.grid == NULL);
         vt_from_slave(term, buf, count);
+        got_output = true;
+    }
+
+    /* The tab label shows the foreground process; refresh it when the
+     * tab produces output. Background output is remembered, so the tab
+     * bar can mark the tab even when it is not redrawn as such. */
+    if (got_output) {
+        LOG_INFO("ptmx: term=%p hidden=%d got output", (void *)term,
+                 term->tab.hidden);
+        tab_update_comm(term);
+        if (term->window != NULL && term->window->term != term &&
+            !term->tab.output_pending)
+        {
+            term->tab.output_pending = true;
+            render_refresh_tab_bar(term->window);
+        }
     }
 
     if (!term->render.app_sync_updates.enabled) {
@@ -427,6 +446,10 @@ fdm_flash(struct fdm *fdm, int fd, int events, void *data)
             (unsigned long long)expiration_count);
 
     term->flash.active = false;
+
+    if (term->window->term != term)
+        return true;
+
     render_overlay(term);
 
     // since the overlay surface is synced with the main window surface, we have
@@ -1163,6 +1186,48 @@ load_fonts_from_conf(struct terminal *term)
     return reload_fonts(term, true);
 }
 
+/*
+ * Copies the (run-time adjusted) font sizes of another terminal, and
+ * reloads the fonts if they differ. The grid is *not* resized; the
+ * caller is expected to resize the terminal. Returns true if the
+ * fonts were reloaded.
+ */
+bool
+term_font_size_copy(struct terminal *dst, const struct terminal *src)
+{
+    bool differs = false;
+
+    for (size_t i = 0; i < 4; i++) {
+        const size_t count = dst->conf->fonts[i].count;
+
+        /*
+         * Font sizes are per font, so the font lists must match. We
+         * only verify the number of fonts; tabs in a window are
+         * created with clones of the same configuration.
+         */
+        if (src->conf->fonts[i].count != count)
+            return false;
+
+        for (size_t j = 0; j < count; j++) {
+            const struct config_font *d = &dst->font_sizes[i][j];
+            const struct config_font *s = &src->font_sizes[i][j];
+
+            if (d->pt_size != s->pt_size || d->px_size != s->px_size)
+                differs = true;
+        }
+    }
+
+    if (!differs)
+        return false;
+
+    for (size_t i = 0; i < 4; i++) {
+        memcpy(dst->font_sizes[i], src->font_sizes[i],
+               dst->conf->fonts[i].count * sizeof(dst->font_sizes[i][0]));
+    }
+
+    return reload_fonts(dst, false);
+}
+
 static void fdm_client_terminated(
     struct reaper *reaper, pid_t pid, int status, void *data);
 
@@ -1173,6 +1238,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
           struct wayland *wayl, const char *foot_exe, const char *cwd,
           const char *token, const char *pty_path,
           int argc, char *const *argv, const char *const *envp,
+          struct wl_window *tab_window,
           void (*shutdown_cb)(void *data, int exit_code), void *shutdown_data)
 {
     int ptmx = -1;
@@ -1371,6 +1437,8 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
                 .url = shm_chain_new(wayl, false, 1, desired_bit_depth, NULL, NULL),
                 .csd = shm_chain_new(wayl, false, 1, desired_bit_depth, NULL, NULL),
                 .overlay = shm_chain_new(wayl, false, 1, desired_bit_depth, NULL, NULL),
+                .tab_bar = shm_chain_new(wayl, false, 1, desired_bit_depth, NULL, NULL),
+                .scrollbar = shm_chain_new(wayl, false, 1, desired_bit_depth, NULL, NULL),
             },
             .scrollback_lines = conf->scrollback.lines,
             .app_sync_updates.timer_fd = app_sync_updates_fd,
@@ -1435,6 +1503,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
     add_utmp_record(conf, reaper, ptmx);
 
     if (!pty_path) {
+
         /* Start the slave/client */
         if ((term->slave = slave_spawn(
                  term->ptmx, argc, term->cwd, argv, envp, &conf->env_vars,
@@ -1447,14 +1516,21 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         reaper_add(term->reaper, term->slave, &fdm_client_terminated, term);
     }
 
-    /* Guess scale; we're not mapped yet, so we don't know on which
-     * output we'll be. Use scaling factor from first monitor */
-    xassert(tll_length(term->wl->monitors) > 0);
-    term->scale = tll_front(term->wl->monitors).scale;
+    if (tab_window != NULL) {
+        /* New tab in an existing window; inherit the window's scale */
+        term->scale = tab_window->term->scale;
+        term->window = tab_window;
+        tll_push_back(tab_window->tabs, term);
+    } else {
+        /* Guess scale; we're not mapped yet, so we don't know on which
+         * output we'll be. Use scaling factor from first monitor */
+        xassert(tll_length(term->wl->monitors) > 0);
+        term->scale = tll_front(term->wl->monitors).scale;
 
-    /* Initialize the Wayland window backend */
-    if ((term->window = wayl_win_init(term, token)) == NULL)
-        goto err;
+        /* Initialize the Wayland window backend */
+        if ((term->window = wayl_win_init(term, token)) == NULL)
+            goto err;
+    }
 
     /* Load fonts */
     if (!term_font_dpi_changed(term, 0.))
@@ -1467,7 +1543,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
     /* Let the Wayland backend know we exist */
     tll_push_back(wayl->terms, term);
 
-    switch (conf->startup_mode) {
+    switch (tab_window != NULL ? STARTUP_WINDOWED : conf->startup_mode) {
     case STARTUP_WINDOWED:
         break;
 
@@ -1507,10 +1583,13 @@ close_fds:
 void
 term_window_configured(struct terminal *term)
 {
-    /* Enable ptmx FDM callback */
-    if (!term->shutdown.in_progress) {
-        xassert(term->window->is_configured);
+    /* Enable ptmx FDM callback. Idempotent: extra tabs created after
+     * the window's first configure (e.g. from the --tab option) miss
+     * that event, so the caller may invoke this for every tab in the
+     * window on each configure. */
+    if (!term->shutdown.in_progress && !term->ptmx_fdm_added) {
         fdm_add(term->fdm, term->ptmx, EPOLLIN, &fdm_ptmx, term);
+        term->ptmx_fdm_added = true;
 
         const bool gamma_correct = wayl_do_linear_blending(term->wl, term->conf);
         LOG_INFO("gamma-correct blending: %s", gamma_correct ? "enabled" : "disabled");
@@ -1632,11 +1711,13 @@ fdm_shutdown(struct fdm *fdm, int fd, int events, void *data)
     /* Kill the event FD */
     fdm_del(term->fdm, fd);
 
-    wayl_win_destroy(term->window);
-    term->window = NULL;
+    if (term->window != NULL) {
+        if (tab_detach(term))
+            wayl_win_destroy(term->window);
+        term->window = NULL;
+    }
 
     struct wayland *wayl = term->wl;
-
     /*
      * Normally we'd get unmapped when we destroy the Wayland
      * above.
@@ -1840,7 +1921,8 @@ term_destroy(struct terminal *term)
         fdm_del(term->fdm, term->shutdown.terminate_timeout_fd);
 
     if (term->window != NULL) {
-        wayl_win_destroy(term->window);
+        if (tab_detach(term))
+            wayl_win_destroy(term->window);
         term->window = NULL;
     }
 
@@ -1875,6 +1957,10 @@ term_destroy(struct terminal *term)
     free(term->app_id);
     free(term->window_title);
     tll_free_and_free(term->window_title_stack, free);
+    free(term->tab.title);
+    free(term->tab.comm);
+    free(term->tab.rename.buf);
+    free(term->paste_confirm.data);
 
     for (size_t i = 0; i < sizeof(term->fonts) / sizeof(term->fonts[0]); i++)
         fcft_destroy(term->fonts[i]);
@@ -1917,6 +2003,8 @@ term_destroy(struct terminal *term)
     shm_chain_free(term->render.chains.url);
     shm_chain_free(term->render.chains.csd);
     shm_chain_free(term->render.chains.overlay);
+    shm_chain_free(term->render.chains.tab_bar);
+    shm_chain_free(term->render.chains.scrollbar);
     pixman_region32_fini(&term->render.last_overlay_clip);
 
     tll_free(term->tab_stops);
@@ -3644,6 +3732,8 @@ term_xcursor_update_for_seat(struct terminal *term, struct seat *seat)
     case TERM_SURF_BUTTON_MINIMIZE:
     case TERM_SURF_BUTTON_MAXIMIZE:
     case TERM_SURF_BUTTON_CLOSE:
+    case TERM_SURF_TAB_BAR:
+    case TERM_SURF_SCROLLBAR:
         shape = CURSOR_SHAPE_LEFT_PTR;
         break;
 
@@ -3772,6 +3862,8 @@ term_bell(struct terminal *term)
 
     if (!term->bell_action_enabled)
         return;
+
+    tab_mark_attention(term);
 
     if (term->conf->bell.urgent && !term->kbd_focus) {
         if (!wayl_win_set_urgent(term->window)) {
@@ -4469,6 +4561,10 @@ term_surface_kind(const struct terminal *term, const struct wl_surface *surface)
         return TERM_SURF_BUTTON_MAXIMIZE;
     else if (surface == term->window->csd.surface[CSD_SURF_CLOSE].surface.surf)
         return TERM_SURF_BUTTON_CLOSE;
+    else if (surface == term->window->tab_bar.surface.surface.surf)
+        return TERM_SURF_TAB_BAR;
+    else if (surface == term->window->scrollbar.surface.surface.surf)
+        return TERM_SURF_SCROLLBAR;
     else
         return TERM_SURF_NONE;
 }
@@ -4850,4 +4946,64 @@ term_theme_get(const struct terminal *term)
     return term->colors.active_theme == COLOR_THEME_DARK
         ? &term->conf->colors_dark
         : &term->conf->colors_light;
+}
+
+struct terminal *
+term_init_extra_tab(
+    const struct config *conf, struct fdm *fdm, struct reaper *reaper,
+    struct wayland *wayl, const char *foot_exe, const char *cwd,
+    const char *token, struct wl_window *tab_window, const char *spec,
+    void (*shutdown_cb)(void *data, int exit_code), void *shutdown_data)
+{
+    /* "[X:]command" - optional single-character prefix names the tab
+     * (any character, digit or not; digits create visible numbered
+     * tabs). No prefix -> hidden, unnamed */
+    const char *cmd = spec;
+    unsigned char name = 0;
+    bool hidden = true;
+    if (spec[0] != '\0' && spec[1] == ':') {
+        name = (unsigned char)spec[0];
+        hidden = spec[0] < '0' || spec[0] > '9';
+        cmd = spec + 2;
+    }
+
+    struct config *tab_conf = config_clone(conf);
+
+    /* Empty command -> default shell */
+    char **tab_argv = NULL;
+    int tab_argc = 0;
+    if (*cmd != '\0' && !tokenize_cmdline(cmd, &tab_argv)) {
+        LOG_ERR("tab: failed to tokenize: %s", cmd);
+        config_free(tab_conf);
+        return NULL;
+    }
+    if (tab_argv != NULL) {
+        while (tab_argv[tab_argc] != NULL)
+            tab_argc++;
+    }
+
+    struct terminal *tab = term_init(
+        tab_conf, fdm, reaper, wayl, foot_exe, cwd, token, NULL,
+        tab_argc, tab_argv, NULL, tab_window, shutdown_cb, shutdown_data);
+
+    /* slave_spawn() consumed argv in the forked slave; free our copy */
+    if (tab_argv != NULL) {
+        for (int i = 0; tab_argv[i] != NULL; i++)
+            free(tab_argv[i]);
+        free(tab_argv);
+    }
+
+    if (tab == NULL) {
+        LOG_ERR("failed to instantiate extra tab: %s", cmd);
+        config_free(tab_conf);
+        return NULL;
+    }
+
+    tab->tab.hidden = hidden;
+    tab->tab.name = name;
+    render_refresh_tab_bar(tab->window);
+    /* Note: the PTY is enabled by term_window_configured(), invoked
+     * from the window's configure handler for every tab in the window
+     * (this tab may have been created before that first configure) */
+    return tab;
 }

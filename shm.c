@@ -406,6 +406,7 @@ get_new_buffers(struct buffer_chain *chain, size_t count,
 #else
     off_t offset = 0;
     off_t memfd_size = total_size;
+    (void)max_pool_size;
 #endif
 
     /* Page align */

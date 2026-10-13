@@ -534,6 +534,26 @@ Note: do not set *TERM* here; use the *term* option in the main
 	
 	Default: _enabled_
 
+*confirm-paste*
+	When to ask for confirmation before pasting text (from the
+	clipboard, the primary selection, or by drag-and-drop) that
+	contains more than one line. One of:
+	
+	- *never*: never ask.
+	- *unsafe*: ask if the application has not enabled bracketed
+	  paste mode. Without it, each pasted newline is sent as *Enter*,
+	  and a shell executes each line as soon as it is pasted.
+	- *multiline*: always ask, for text with newlines.
+	
+	While asking, all keyboard input goes to the question. Answer
+	with *y* or *Enter* to paste, or *n* or *Escape* to discard the
+	text.
+	
+	Note that foot always removes control characters (such as
+	*ESC*) from pasted text.
+	
+	Default: _unsafe_
+
 
 # SECTION: bell
 
@@ -847,6 +867,37 @@ xdgtoken=95ebdfe56e4f47ddb5bba9d7dc3a2c35
 	Amount to multiply mouse scrolling with. It is a decimal number,
 	i.e. fractions are allowed. Default: _3.0_.
 
+*scrollbar*
+	Whether to show a scrollbar along the right edge of the window.
+	One of:
+	
+	- *never*: no scrollbar.
+	- *auto*: only show the scrollbar while scrolled back in the
+	  scrollback history.
+	- *always*: always show the scrollbar (except in applications
+	  using the alternate screen, such as full-screen editors, since
+	  they have no scrollback).
+	
+	The scrollbar is a slim, rounded thumb (without a track), which
+	widens while the mouse pointer is over it. Drag it to scroll, or
+	click above or below it to jump to that position. Scrolling the
+	mouse wheel over the scrollbar always scrolls the scrollback,
+	even if the application has enabled mouse reporting.
+	
+	The scrollback position indicator (see *indicator-position*) is
+	placed next to the scrollbar. With an empty *indicator-format*
+	(the default), the indicator is not shown while the scrollbar is,
+	since it would only mark the same position.
+	
+	The scrollbar is drawn on top of the terminal's right edge. To
+	avoid it covering text, configure a right padding at least as
+	wide as the scrollbar (see *pad*).
+	
+	Default: _never_.
+
+*scrollbar-width*
+	Width of the scrollbar, in logical pixels. Default: _8_.
+
 *indicator-position*
 	Configures the style of the scrollback position indicator. One of
 	*none*, *fixed* or *relative*. *none* disables the indicator
@@ -1048,7 +1099,7 @@ The default theme used is *colors-dark*, unless
 	
 	Example: *ff0000 00ff00* (green cursor, red text)
 	
-	Default: the regular foreground and background colors, reversed.
+	Default: current foreground and background colors, inversed.
 
 *foreground*
 	Default foreground color. This is the color used when no ANSI
@@ -1266,6 +1317,95 @@ Examples:
 *button-close-color*
 	Close button's background color. Default: use the default
 	_regular1_ color (red).
+
+# SECTION: tabs
+
+This section controls the behavior of tabs. See the *tab-\** key
+bindings for opening, closing and switching tabs.
+
+The tab bar uses the *font* and *size* options from the *csd*
+section. When a background tab rings the bell, or sends a desktop
+notification, its label is marked with a *•*, in red (color 1 of the
+palette), until the tab is activated.
+
+Tabs created with the *--tab* option without a digit prefix are
+hidden: they are not shown in the tab bar and are skipped by
+tab-next/tab-prev, but remain reachable via the *tab-goto* key
+binding, using the name given in the *--tab* spec prefix.
+
+*show-bar*
+	When to show the tab bar. One of:
+	
+	- *auto*: when the window has more than one tab.
+	- *always*: even when the window only has one tab.
+	- *never*: never; use the *tab-\** key bindings to switch
+	  tabs. The tab bar is still shown while renaming a tab.
+	
+	Default: _auto_.
+
+*new-tab-position*
+	Where new tabs are opened. One of:
+	
+	- *after-current*: to the right of the current tab.
+	- *last*: after the last tab.
+	
+	Default: _after-current_.
+
+*activate-on-close*
+	Which tab to switch to when the current tab is closed. One of:
+	
+	- *right*: the tab to the right of the closed tab (or the tab to
+	  the left, if it was the last tab).
+	- *last-used*: the most recently used tab (see *tab-last-used*).
+	
+	Default: _right_.
+
+*shared-font-size*
+	Boolean. When enabled, changing the font size (with the
+	*font-increase*, *font-decrease* and *font-reset* key bindings)
+	applies to all tabs in the window, and new tabs use the current
+	font size. When disabled, each tab has its own font size.
+	Default: _yes_.
+
+*confirm-close*
+	Boolean. When enabled, closing a window that has more than one
+	tab (e.g. from the compositor, the window's close button, or the
+	*quit* key binding) first asks for confirmation. Answer with *y*
+	or *Enter* to close all tabs, or *n* or *Escape* to keep the
+	window open. Closing the window again while the question is
+	shown closes it immediately.
+	
+	This option was previously called *confirm-close-tabs*, in the
+	*main* section. The old name still works, but is deprecated.
+	
+	Default: _yes_.
+
+*confirm-close-multiple*
+	Boolean. When enabled, closing more than one tab with the
+	*tab-close-left*, *tab-close-right* or *tab-close-others* key
+	bindings first asks for confirmation. Answer with *y* or *Enter*
+	to close the tabs, or *n* or *Escape* to keep them open. Default:
+	_yes_.
+
+*bar-bottom*
+	Boolean. When enabled, the tab bar is drawn at the bottom of the
+	window instead of the top. Default: _no_.
+
+*bar-height*
+	Height of the tab bar strip, in points (or px with a _px_ suffix).
+	Default: _13_.
+
+*bar-command*
+	Command line to run when the window is created. Its stdout is
+	rendered in the right half of the tab bar, showing the most recent
+	output line; the display is refreshed once per second. Example:
+	_bar-command=date +%H:%M_. Default: _none_.
+
+*bar-tab-max-width*
+	Maximum width of a tab in the tab bar. One of _none_, a
+	percentage of the tab region width (e.g. _50%_), or a length in
+	points (or px with a _px_ suffix). Tabs are otherwise sized to
+	fit their title. Default: _none_.
 
 # SECTION: key-bindings
 
@@ -1508,8 +1648,88 @@ e.g. *search-start=none*.
 	
 	Default: _none_
 
+*transparency-toggle*
+	Toggles transparency on and off, for all tabs in the window. Only
+	has an effect if the background is transparent (see *alpha* in
+	the *colors-dark* and *colors-light* sections). Default: _none_.
+
 *quit*
-	Quit foot. Default: _none_.
+	Quit foot, closing all tabs in the window (see *confirm-close* in
+	the *tabs* section). Default: _none_.
+
+*tab-new*
+	Opens a new tab in the current window. The new tab runs
+	the configured *shell*. If the shell has been configured to emit the
+	OSC 7 escape sequence, the new tab will start in the current
+	working directory.
+	
+	A tab bar is shown at the top of the window whenever it has more
+	than one tab. It uses the *font* and *size* options from the
+	*csd* section. Long titles are truncated with an ellipsis.
+	
+	Mouse actions in the tab bar:
+	
+	- Left click: switch to the tab.
+	- Left click and drag: move the tab.
+	- Double click (on the active tab): rename the tab.
+	- Middle click: close the tab.
+	- Scroll wheel: switch to the next/previous tab.
+	
+	Default: _Control+Shift+t_.
+
+*tab-close*
+	Closes the current tab. Closing the last tab closes the
+	window. Default: _Control+Shift+w_.
+
+*tab-next*, *tab-prev*
+	Switches to the next, or previous, tab. Wraps around at the
+	first and last tab. Default: _Control+Next_ and _Control+Prior_
+	(i.e. Control+PageDown and Control+PageUp).
+
+*tab-goto*
+	Switches to the tab with the given single-character name. Value
+	syntax: _NAME_:_key-combo_[_,_NAME_:_key-combo_...]. Tab names
+	come from the *--tab* spec prefix (e.g. _!_:cmus). Default:
+	_none_. Example: _tab-goto=! :ctrl+shift+1,@ :ctrl+shift+2_.
+
+*tab-first*, *tab-last*
+	Switches to the first, or last, tab. Default: _none_.
+
+*tab-last-used*
+	Switches to the previously used tab. Using it repeatedly toggles
+	between the two most recently used tabs. Default: _none_.
+
+*tab-move-left*, *tab-move-right*
+	Moves the current tab one step to the left, or right, in the tab
+	bar. Default: _Control+Shift+Prior_ and _Control+Shift+Next_.
+
+*tab-move-first*, *tab-move-last*
+	Moves the current tab to the start, or end, of the tab
+	bar. Default: _none_.
+
+*tab-close-left*, *tab-close-right*, *tab-close-others*
+	Closes all tabs to the left of, to the right of, or other than,
+	the current tab. When closing more than one tab, the user is first
+	asked to confirm (see *confirm-close-multiple* in the *tabs*
+	section). Default: _none_.
+
+*tab-rename*
+	Renames the current tab. The name is edited in-place in the tab
+	bar (which is shown on top of the terminal while renaming, if the
+	window only has one tab). All keyboard input goes to the name
+	while renaming:
+	
+	- Enter: save the new name. An empty name reverts to showing the
+	  window title (as set by the application).
+	- Escape, Ctrl+c, Ctrl+g: cancel.
+	- Backspace: delete the previous character.
+	- Ctrl+Backspace: delete the previous word.
+	- Ctrl+u: clear the name.
+	
+	The name is only used in the tab bar; it does not change the
+	window title.
+	
+	Default: _none_.
 
 # SECTION: search-bindings
 

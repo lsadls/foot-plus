@@ -362,6 +362,8 @@ enum term_surface {
     TERM_SURF_BUTTON_MINIMIZE,
     TERM_SURF_BUTTON_MAXIMIZE,
     TERM_SURF_BUTTON_CLOSE,
+    TERM_SURF_TAB_BAR,
+    TERM_SURF_SCROLLBAR,
 };
 
 enum overlay_style {
@@ -369,6 +371,7 @@ enum overlay_style {
     OVERLAY_SEARCH,
     OVERLAY_FLASH,
     OVERLAY_UNICODE_MODE,
+    OVERLAY_CONFIRM,
 };
 
 typedef tll(struct ptmx_buffer) ptmx_buffer_list_t;
@@ -419,6 +422,7 @@ struct terminal {
 
     pid_t slave;
     int ptmx;
+    bool ptmx_fdm_added:1;  /* ptmx registered with the FDM (see term_window_configured) */
 
     struct vt vt;
     struct grid *grid;
@@ -500,6 +504,17 @@ struct terminal {
     } custom_glyphs;
 
     bool is_sending_paste_data;
+
+    /* Paste data is buffered, to decide whether to ask the user
+     * before sending it (security.confirm-paste) */
+    struct {
+        bool buffering;
+        bool active;  /* Asking the user */
+        char *data;
+        size_t len;
+        size_t sz;
+        size_t lines;
+    } paste_confirm;
     ptmx_buffer_list_t ptmx_buffers;
     ptmx_buffer_list_t ptmx_paste_buffers;
 
@@ -554,6 +569,41 @@ struct terminal {
     bool window_title_has_been_set;
     char *window_title;
     tll(char *) window_title_stack;
+
+    struct {
+        char *title;  /* User assigned; overrides window_title in the tab bar */
+
+        /* When the tab was last activated (wl_window.tab_activations) */
+        uint64_t activated;
+
+        /* Rang the bell, or sent a notification, while in the background */
+        bool attention;
+
+        /* Received output while in the background (not the active tab) */
+        bool output_pending;
+
+        /* Hidden tab: not shown in the tab bar, not reached by
+         * tab-next/tab-prev; reachable only via tab-goto-<name>
+         * bindings */
+        bool hidden;
+
+        /* Single-character name used by tab-goto-<name> bindings
+         * (from the --tab spec prefix); 0 = unnamed */
+        unsigned char name;
+
+        /* Basename of the foreground process' /proc/<pid>/comm */
+        char *comm;
+        pid_t comm_pid;   /* Process group 'comm' was read from; -1 if none */
+
+        /* Interactive renaming, edited in-place in the tab bar */
+        struct {
+            bool active;
+            char32_t *buf;
+            size_t len;
+            size_t sz;
+        } rename;
+    } tab;
+
     //char *window_icon;  /* No escape sequence available to set the icon */
     //tll(char *)window_icon_stack;
     char *app_id;
@@ -648,6 +698,8 @@ struct terminal {
             struct buffer_chain *url;
             struct buffer_chain *csd;
             struct buffer_chain *overlay;
+            struct buffer_chain *tab_bar;
+            struct buffer_chain *scrollbar;
         } chains;
 
         /* Scheduled for rendering, as soon-as-possible */
@@ -844,6 +896,16 @@ struct terminal *term_init(
     struct wayland *wayl, const char *foot_exe, const char *cwd,
     const char *token, const char *pty_path,
     int argc, char *const *argv, const char *const *envp,
+    struct wl_window *tab_window,
+    void (*shutdown_cb)(void *data, int exit_code), void *shutdown_data);
+
+/* Create an extra tab from a "--tab" spec ("[X:]command", X is a
+ * single-character name; non-digit names make the tab hidden), attached
+ * to the given window. Clones the config. Returns NULL on failure. */
+struct terminal *term_init_extra_tab(
+    const struct config *conf, struct fdm *fdm, struct reaper *reaper,
+    struct wayland *wayl, const char *foot_exe, const char *cwd,
+    const char *token, struct wl_window *tab_window, const char *spec,
     void (*shutdown_cb)(void *data, int exit_code), void *shutdown_data);
 
 bool term_shutdown(struct terminal *term);
@@ -863,6 +925,7 @@ bool term_update_scale(struct terminal *term);
 bool term_font_size_increase(struct terminal *term);
 bool term_font_size_decrease(struct terminal *term);
 bool term_font_size_reset(struct terminal *term);
+bool term_font_size_copy(struct terminal *dst, const struct terminal *src);
 bool term_font_dpi_changed(struct terminal *term, float old_scale);
 void term_font_subpixel_changed(struct terminal *term);
 int term_font_baseline(const struct terminal *term);

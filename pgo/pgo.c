@@ -16,6 +16,7 @@
 #include "key-binding.h"
 #include "reaper.h"
 #include "sixel.h"
+#include "tabs.h"
 #include "user-notification.h"
 #include "vt.h"
 
@@ -105,6 +106,8 @@ void wayl_win_alpha_changed(struct wl_window *win) {}
 bool wayl_win_set_urgent(struct wl_window *win) { return true; }
 bool wayl_win_ring_bell(const struct wl_window *win) { return true; }
 bool wayl_fractional_scaling(const struct wayland *wayl) { return true; }
+
+bool tab_detach(struct terminal *term) { return true; }
 
 pid_t
 spawn(struct reaper *reaper, const char *cwd, char *const argv[],

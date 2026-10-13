@@ -491,6 +491,7 @@ test_section_main(void)
     test_boolean(&ctx, &parse_section_main, "box-drawings-uses-font-glyphs", &conf.box_drawings_uses_font_glyphs);
     test_boolean(&ctx, &parse_section_main, "locked-title", &conf.locked_title);
     test_boolean(&ctx, &parse_section_main, "dpi-aware", &conf.dpi_aware);
+    test_boolean(&ctx, &parse_section_main, "confirm-close-tabs", &conf.tabs.confirm_close);
     test_boolean(&ctx, &parse_section_main, "gamma-correct-blending", &conf.gamma_correct);
     test_boolean(&ctx, &parse_section_main, "uppercase-regex-insert", &conf.uppercase_regex_insert);
 
@@ -602,6 +603,15 @@ test_section_scrollback(void)
     test_uint32(&ctx, &parse_section_scrollback, "lines",
                 &conf.scrollback.lines);
     test_float(&ctx, parse_section_scrollback, "multiplier", &conf.scrollback.multiplier);
+    test_uint16(&ctx, &parse_section_scrollback, "scrollbar-width",
+                &conf.scrollback.scrollbar_width);
+
+    test_enum(
+        &ctx, &parse_section_scrollback, "scrollbar",
+        3,
+        (const char *[]){"never", "auto", "always"},
+        (int []){SCROLLBAR_NEVER, SCROLLBAR_AUTO, SCROLLBAR_ALWAYS},
+        (int *)&conf.scrollback.scrollbar);
 
     test_enum(
         &ctx, &parse_section_scrollback, "indicator-position",
@@ -864,6 +874,94 @@ test_section_colors_light(void)
     test_invalid_key(&ctx, &parse_section_colors_light, "256");
 
     /* TODO: alpha (float in range 0-1, converted to uint16_t) */
+
+    config_free(&conf);
+}
+
+static void
+test_section_tabs(void)
+{
+    struct config conf = {0};
+    struct context ctx = {
+        .conf = &conf, .section = "tabs", .path = "unittest"};
+
+    test_invalid_key(&ctx, &parse_section_tabs, "invalid-key");
+
+    test_enum(
+        &ctx, &parse_section_tabs, "new-tab-position",
+        2,
+        (const char *[]){"after-current", "last"},
+        (int []){TABS_NEW_POSITION_AFTER_CURRENT, TABS_NEW_POSITION_LAST},
+        (int *)&conf.tabs.new_position);
+
+    test_enum(
+        &ctx, &parse_section_tabs, "show-bar",
+        3,
+        (const char *[]){"auto", "always", "never"},
+        (int []){TABS_SHOW_BAR_AUTO, TABS_SHOW_BAR_ALWAYS, TABS_SHOW_BAR_NEVER},
+        (int *)&conf.tabs.show_bar);
+
+    test_enum(
+        &ctx, &parse_section_tabs, "activate-on-close",
+        2,
+        (const char *[]){"right", "last-used"},
+        (int []){TABS_ACTIVATE_ON_CLOSE_RIGHT, TABS_ACTIVATE_ON_CLOSE_LAST_USED},
+        (int *)&conf.tabs.activate_on_close);
+
+    test_boolean(&ctx, &parse_section_tabs, "shared-font-size", &conf.tabs.shared_font_size);
+    test_boolean(&ctx, &parse_section_tabs, "confirm-close", &conf.tabs.confirm_close);
+    test_boolean(&ctx, &parse_section_tabs, "confirm-close-multiple", &conf.tabs.confirm_close_multiple);
+
+    /* bar-tab-max-width: none / percent / pt-or-px / invalid */
+    ctx.key = "bar-tab-max-width";
+    {
+        static const struct {
+            const char *option_string;
+            int expected_type; /* -1: expect parse failure */
+            float percent;
+            struct pt_or_px length;
+        } input[] = {
+            {"none", TAB_MAX_WIDTH_NONE, 0, {0}},
+            {"25%", TAB_MAX_WIDTH_PERCENT, 0.25, {0}},
+            {"12", TAB_MAX_WIDTH_ABSOLUTE, 0, {.pt = 12}},
+            {"120px", TAB_MAX_WIDTH_ABSOLUTE, 0, {.px = 120}},
+            {"unittest-invalid-pt-or-px-value", -1, 0, {0}},
+        };
+
+        for (size_t i = 0; i < ALEN(input); i++) {
+            ctx.value = input[i].option_string;
+
+            if (input[i].expected_type < 0) {
+                if (parse_section_tabs(&ctx)) {
+                    BUG("[%s].%s=%s: did not fail to parse as expected",
+                        ctx.section, ctx.key, ctx.value);
+                }
+            } else {
+                if (!parse_section_tabs(&ctx)) {
+                    BUG("[%s].%s=%s: failed to parse",
+                        ctx.section, ctx.key, ctx.value);
+                }
+                if (conf.tabs.tab_max_width.type != input[i].expected_type) {
+                    BUG("[%s].%s=%s: wrong type %d (expected %d)",
+                        ctx.section, ctx.key, ctx.value,
+                        conf.tabs.tab_max_width.type, input[i].expected_type);
+                }
+                if (input[i].expected_type == TAB_MAX_WIDTH_PERCENT &&
+                    conf.tabs.tab_max_width.percent != input[i].percent) {
+                    BUG("[%s].%s=%s: percent=%f (expected %f)",
+                        ctx.section, ctx.key, ctx.value,
+                        conf.tabs.tab_max_width.percent, input[i].percent);
+                }
+                if (input[i].expected_type == TAB_MAX_WIDTH_ABSOLUTE &&
+                    memcmp(&conf.tabs.tab_max_width.length, &input[i].length,
+                           sizeof(input[i].length)) != 0) {
+                    BUG("[%s].%s=%s: length mismatch (expected pt=%f px=%d)",
+                        ctx.section, ctx.key, ctx.value,
+                        input[i].length.pt, input[i].length.px);
+                }
+            }
+        }
+    }
 
     config_free(&conf);
 }
@@ -1235,6 +1333,12 @@ test_section_key_bindings(void)
         if (binding_action_map[action] == NULL)
             continue;
 
+        /* tab-goto has its own "<char>:<combo>[,...]" value syntax,
+         * which the generic key-binding test cannot produce; it is
+         * covered by test_section_key_bindings_tab_goto() */
+        if (action == BIND_ACTION_TAB_GOTO)
+            continue;
+
         test_key_binding(
             &ctx, &parse_section_key_bindings,
             action, BIND_ACTION_KEY_COUNT - 1,
@@ -1242,6 +1346,39 @@ test_section_key_bindings(void)
             action >= BIND_ACTION_PIPE_SCROLLBACK && action <= BIND_ACTION_PIPE_COMMAND_OUTPUT,
             action >= BIND_ACTION_REGEX_LAUNCH && action <= BIND_ACTION_REGEX_COPY);
     }
+
+    config_free(&conf);
+}
+
+static void
+test_section_key_bindings_tab_goto(void)
+{
+    struct config conf = {0};
+    struct context ctx = {
+        .conf = &conf, .section = "key-bindings", .path = "unittest"};
+
+    /* Invalid: empty, missing ':', empty combo */
+    ctx.key = "tab-goto";
+    ctx.value = "";
+    xassert(!parse_section_key_bindings(&ctx));
+    ctx.value = "!:";
+    xassert(!parse_section_key_bindings(&ctx));
+    ctx.value = "!";
+    xassert(!parse_section_key_bindings(&ctx));
+
+    /* Valid: single and multiple entries */
+    ctx.value = "!:Control+Shift+1";
+    xassert(parse_section_key_bindings(&ctx));
+    xassert(conf.bindings.key.count == 1);
+    xassert(conf.bindings.key.arr[0].action == BIND_ACTION_TAB_GOTO);
+    xassert(conf.bindings.key.arr[0].aux.type == BINDING_AUX_CHAR);
+    xassert(conf.bindings.key.arr[0].aux.ch == '!');
+
+    ctx.value = "!:Control+Shift+1,@:Control+Shift+2";
+    xassert(parse_section_key_bindings(&ctx));
+    xassert(conf.bindings.key.count == 2);
+    xassert(conf.bindings.key.arr[0].aux.ch == '!');
+    xassert(conf.bindings.key.arr[1].aux.ch == '@');
 
     config_free(&conf);
 }
@@ -1539,10 +1676,12 @@ main(int argc, const char *const *argv)
     test_section_cursor();
     test_section_mouse();
     test_section_touch();
+    test_section_tabs();
     test_section_colors_dark();
     test_section_colors_light();
     test_section_csd();
     test_section_key_bindings();
+    test_section_key_bindings_tab_goto();
     test_section_key_bindings_collisions();
     test_section_search_bindings();
     test_section_search_bindings_collisions();

@@ -337,6 +337,8 @@ executable(
   'shm.c', 'shm.h',
   'slave.c', 'slave.h',
   'spawn.c', 'spawn.h',
+  'tabbar_cmd.c', 'tabbar_cmd.h',
+  'tabs.c', 'tabs.h',
   'tokenize.c', 'tokenize.h',
   'unicode-mode.c', 'unicode-mode.h',
   'url-mode.c', 'url-mode.h',

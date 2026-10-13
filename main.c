@@ -30,6 +30,7 @@
 #include "server.h"
 #include "shm.h"
 #include "terminal.h"
+#include "tokenize.h"
 #include "util.h"
 #include "xmalloc.h"
 #include "xsnprintf.h"
@@ -94,6 +95,7 @@ print_usage(const char *prog_name)
         "  -w,--window-size-pixels=WIDTHxHEIGHT     initial width and height, in pixels\n"
         "  -W,--window-size-chars=WIDTHxHEIGHT      initial width and height, in characters\n"
         "  -s,--server[=PATH]                       run as a server (use 'footclient' to start terminals).\n"
+        "     --tab=[X:]COMMAND[,...]                additional tab; single-character prefix names it (non-digit prefix: hidden tab)\n"
         "                                           Without PATH, $XDG_RUNTIME_DIR/foot-$WAYLAND_DISPLAY.sock will be used.\n"
         "  -H,--hold                                remain open after child process exits\n"
         "  -p,--print-pid=FILE|FD                   print PID to file or FD (only applicable in server mode)\n"
@@ -188,6 +190,7 @@ sanitize_signals(void)
 enum {
     PTY_OPTION = CHAR_MAX + 1,
     TOPLEVEL_TAG_OPTION = CHAR_MAX + 2,
+    TAB_OPTION = CHAR_MAX + 3,
 };
 
 int
@@ -230,6 +233,7 @@ main(int argc, char *const *argv)
         {"fullscreen",             no_argument,       NULL, 'F'},
         {"presentation-timings",   no_argument,       NULL, 'P'}, /* Undocumented */
         {"pty",                    required_argument, NULL, PTY_OPTION},
+        {"tab",                    required_argument, NULL, TAB_OPTION},
         {"print-pid",              required_argument, NULL, 'p'},
         {"log-level",              required_argument, NULL, 'd'},
         {"log-colorize",           optional_argument, NULL, 'l'},
@@ -254,6 +258,7 @@ main(int argc, char *const *argv)
     bool log_syslog = true;
     user_notifications_t user_notifications = tll_init();
     config_override_t overrides = tll_init();
+    tll(char *) extra_tabs = tll_init();
 
     while (true) {
         int c = getopt_long(argc, argv, "+c:Co:t:T:a:LD:f:w:W:s::HmFPp:d:l::Sveh", longopts, NULL);
@@ -367,6 +372,21 @@ main(int argc, char *const *argv)
         case PTY_OPTION:
             pty_path = optarg;
             break;
+
+        case TAB_OPTION: {
+            /* --tab=[X:]command[,command...] - comma separated list;
+             * single-character prefixes name tabs (non-digit names
+             * make them hidden) */
+            char *saveptr = NULL;
+            for (char *spec = strtok_r(optarg, ",", &saveptr);
+                 spec != NULL;
+                 spec = strtok_r(NULL, ",", &saveptr))
+            {
+                if (*spec != '\0')
+                    tll_push_back(extra_tabs, xstrdup(spec));
+            }
+            break;
+        }
 
         case 'P':
             presentation_timings = true;
@@ -648,14 +668,58 @@ main(int argc, char *const *argv)
     if ((renderer = render_init(fdm, wayl)) == NULL)
         goto out;
 
+    /* In non-server mode the first --tab entry becomes the main
+     * terminal (no extra default shell tab is spawned) */
+    char **main_argv = (char **)argv;
+    int main_argc = argc;
+    unsigned char main_name = 0;
+    bool main_hidden = false;
+    char **main_argv_allocated = NULL;
+    if (!as_server && tll_length(extra_tabs) > 0 && argc == 0) {
+        char *spec = tll_pop_front(extra_tabs);
+        const char *cmd = spec;
+        if (spec[0] != '\0' && spec[1] == ':') {
+            main_name = (unsigned char)spec[0];
+            main_hidden = spec[0] < '0' || spec[0] > '9';
+            cmd = spec + 2;
+        }
+        if (*cmd != '\0' && !tokenize_cmdline(cmd, &main_argv_allocated))
+            goto out;
+        if (main_argv_allocated != NULL) {
+            while (main_argv_allocated[main_argc] != NULL)
+                main_argc++;
+        }
+        main_argv = main_argv_allocated;
+        free(spec);
+    }
+
     if (!as_server && (term = term_init(
                            &conf, fdm, reaper, wayl, "foot", cwd, token, pty_path,
-                           argc, argv, NULL,
+                           main_argc, main_argv, NULL, NULL,
                            &term_shutdown_cb, &shutdown_ctx)) == NULL) {
         goto out;
     }
     free(_cwd);
     _cwd = NULL;
+
+    if (!as_server && term != NULL && main_name != 0) {
+        term->tab.hidden = main_hidden;
+        term->tab.name = main_name;
+    }
+
+    /* Remaining --tab entries (non-server mode) */
+    if (!as_server && term != NULL) {
+        tll_foreach(extra_tabs, it) {
+            if (term_init_extra_tab(
+                    &conf, fdm, reaper, wayl, "foot", cwd, token,
+                    term->window, it->item,
+                    &term_shutdown_cb, &shutdown_ctx) == NULL)
+            {
+                goto out;
+            }
+        }
+
+    }
 
     if (as_server && (server = server_init(&conf, fdm, reaper, wayl)) == NULL)
         goto out;
@@ -706,8 +770,30 @@ main(int argc, char *const *argv)
 out:
     free(_cwd);
     free(custom_cwd);
+    tll_free_and_free(extra_tabs, free);
+    if (main_argv_allocated != NULL) {
+        for (int i = 0; main_argv_allocated[i] != NULL; i++)
+            free(main_argv_allocated[i]);
+        free(main_argv_allocated);
+    }
     server_destroy(server);
     term_destroy(term);
+
+    /*
+     * When aborted (e.g. SIGTERM), there may be tabs left, that
+     * aren't owned by 'term', or by the server.
+     */
+    if (wayl != NULL) {
+        tll_foreach(wayl->terms, it) {
+            struct terminal *tab = it->item;
+            void (*cb)(void *, int) = tab->shutdown.cb;
+            void *cb_data = tab->shutdown.cb_data;
+
+            int exit_code = term_destroy(tab);
+            if (cb != NULL)
+                cb(cb_data, exit_code);
+        }
+    }
 
     shm_fini();
     render_destroy(renderer);

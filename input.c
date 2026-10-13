@@ -34,6 +34,7 @@
 #include "search.h"
 #include "selection.h"
 #include "spawn.h"
+#include "tabs.h"
 #include "terminal.h"
 #include "tokenize.h"
 #include "unicode-mode.h"
@@ -454,7 +455,7 @@ execute_binding(struct seat *seat, struct terminal *term,
         return true;
 
     case BIND_ACTION_QUIT:
-        term_shutdown(term);
+        tab_request_close_window(term->window);
         return true;
 
     case BIND_ACTION_REGEX_LAUNCH:
@@ -503,6 +504,79 @@ execute_binding(struct seat *seat, struct terminal *term,
 
     case BIND_ACTION_THEME_TOGGLE:
         term_theme_toggle(term);
+        return true;
+
+    case BIND_ACTION_TAB_NEW:
+        tab_new(term);
+        return true;
+
+    case BIND_ACTION_TAB_CLOSE:
+        term_shutdown(term);
+        return true;
+
+    case BIND_ACTION_TAB_NEXT:
+        tab_cycle(term->window, 1);
+        return true;
+
+    case BIND_ACTION_TAB_PREV:
+        tab_cycle(term->window, -1);
+        return true;
+
+    case BIND_ACTION_TAB_MOVE_LEFT:
+        tab_move(term->window, -1);
+        return true;
+
+    case BIND_ACTION_TAB_MOVE_RIGHT:
+        tab_move(term->window, 1);
+        return true;
+
+    case BIND_ACTION_TAB_RENAME:
+        tab_rename_start(term);
+        return true;
+
+    case BIND_ACTION_TAB_FIRST:
+        tab_activate_index(term->window, 0);
+        return true;
+
+    case BIND_ACTION_TAB_LAST:
+        tab_activate_last(term->window);
+        return true;
+
+    case BIND_ACTION_TAB_LAST_USED:
+        tab_activate_last_used(term->window);
+        return true;
+
+    case BIND_ACTION_TAB_MOVE_FIRST:
+        tab_move_to(term->window, 0);
+        return true;
+
+    case BIND_ACTION_TAB_MOVE_LAST:
+        tab_move_last(term->window);
+        return true;
+
+    case BIND_ACTION_TAB_CLOSE_LEFT:
+        tab_request_close(term->window, TAB_CLOSE_LEFT);
+        return true;
+
+    case BIND_ACTION_TAB_CLOSE_RIGHT:
+        tab_request_close(term->window, TAB_CLOSE_RIGHT);
+        return true;
+
+    case BIND_ACTION_TAB_CLOSE_OTHERS:
+        tab_request_close(term->window, TAB_CLOSE_OTHERS);
+        return true;
+
+    case BIND_ACTION_TRANSPARENCY_TOGGLE: {
+        /* Window-wide, i.e. affects all tabs */
+        struct wl_window *win = term->window;
+        win->force_opaque = !win->force_opaque;
+        wayl_win_alpha_changed(win);
+        render_refresh_full(term);
+        return true;
+    }
+
+    case BIND_ACTION_TAB_GOTO:
+        tab_activate_named(term->window, binding->aux->ch);
         return true;
 
     case BIND_ACTION_SELECT_BEGIN:
@@ -706,6 +780,7 @@ keyboard_enter(void *data, struct wl_keyboard *wl_keyboard, uint32_t serial,
 
     if (unlikely(surface == NULL)) {
         /* Seen on Hyprland */
+        LOG_WARN("compositor sent keyboard_enter event with a NULL surface");
         return;
     }
 
@@ -1645,9 +1720,31 @@ key_press_release(struct seat *seat, struct terminal *term, uint32_t serial,
         seat->wayl->key_binding_manager, term->conf, seat);
     xassert(bindings != NULL);
 
-    if (term->unicode_mode.active) {
+    if (term->window->confirm_close != TAB_CLOSE_NONE) {
+        if (pressed)
+            tab_confirm_close_input(term, sym);
+        return;
+    }
+
+    else if (term->paste_confirm.active) {
+        if (pressed)
+            selection_paste_confirm_input(term, sym);
+        return;
+    }
+
+    else if (term->unicode_mode.active) {
         if (pressed)
             unicode_mode_input(seat, term, sym);
+        return;
+    }
+
+    else if (term->tab.rename.active) {
+        if (pressed) {
+            if (should_repeat)
+                start_repeater(seat, key);
+
+            tab_rename_input(seat, term, key, sym);
+        }
         return;
     }
 
@@ -1923,10 +2020,12 @@ UNITTEST
 
     struct config conf = {0};
     struct grid grid = {0};
+    struct wl_window win = {0};
 
     struct terminal term = {
         .conf = &conf,
         .grid = &grid,
+        .window = &win,
         .ptmx = chan[1],
         .selection = {
             .coords = {
@@ -2512,6 +2611,12 @@ wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
     case TERM_SURF_BORDER_RIGHT:
     case TERM_SURF_BORDER_TOP:
     case TERM_SURF_BORDER_BOTTOM:
+    case TERM_SURF_TAB_BAR:
+        break;
+
+    case TERM_SURF_SCROLLBAR:
+        win->scrollbar.hover = true;
+        render_refresh(term);
         break;
 
     case TERM_SURF_BUTTON_MINIMIZE:
@@ -2611,6 +2716,15 @@ wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
         case TERM_SURF_BORDER_RIGHT:
         case TERM_SURF_BORDER_TOP:
         case TERM_SURF_BORDER_BOTTOM:
+        case TERM_SURF_TAB_BAR:
+            break;
+
+        case TERM_SURF_SCROLLBAR:
+            if (old_moused->window != NULL) {
+                old_moused->window->scrollbar.hover = false;
+                old_moused->window->scrollbar.dragging = false;
+                render_refresh(old_moused);
+            }
             break;
         }
 
@@ -2634,6 +2748,31 @@ pointer_is_on_button(const struct terminal *term, const struct seat *seat,
         return false;
 
     return true;
+}
+
+/*
+ * Scrolls, such that the scrollbar thumb's top edge ends up at 'y'
+ * minus the offset at which the thumb was grabbed.
+ */
+static void
+scrollbar_drag_to(struct terminal *term, int y)
+{
+    struct scrollbar_geometry g;
+    if (!render_scrollbar_geometry(term, &g) || g.max_view_pos <= 0)
+        return;
+
+    const int range = g.track_height - g.thumb_height;
+    if (range <= 0)
+        return;
+
+    const int top = max(0, min(range, y - g.track_y - term->window->scrollbar.drag_offset));
+    const int target = (int)round((double)top * g.max_view_pos / range);
+    const int delta = target - g.view_pos;
+
+    if (delta < 0)
+        cmd_scrollback_up(term, -delta);
+    else if (delta > 0)
+        cmd_scrollback_down(term, delta);
 }
 
 static void
@@ -2695,6 +2834,8 @@ wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
     case TERM_SURF_BORDER_RIGHT:
     case TERM_SURF_BORDER_TOP:
     case TERM_SURF_BORDER_BOTTOM:
+    case TERM_SURF_TAB_BAR:
+    case TERM_SURF_SCROLLBAR:
         break;
     }
 
@@ -2745,6 +2886,17 @@ wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
     case TERM_SURF_BORDER_RIGHT:
     case TERM_SURF_BORDER_TOP:
     case TERM_SURF_BORDER_BOTTOM:
+        break;
+
+    case TERM_SURF_TAB_BAR:
+        /* Dragging a tab (it was activated when the button was pressed) */
+        if (button == BTN_LEFT)
+            tab_drag(win, seat->mouse.x);
+        break;
+
+    case TERM_SURF_SCROLLBAR:
+        if (button == BTN_LEFT && win->scrollbar.dragging)
+            scrollbar_drag_to(term, seat->mouse.y);
         break;
 
     case TERM_SURF_GRID: {
@@ -3241,13 +3393,68 @@ wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
             pointer_is_on_button(term, seat, CSD_SURF_CLOSE) &&
             state == WL_POINTER_BUTTON_STATE_RELEASED)
         {
-            term_shutdown(term);
+            tab_request_close_window(term->window);
         }
         break;
+
+    case TERM_SURF_SCROLLBAR: {
+        if (button != BTN_LEFT)
+            break;
+
+        struct wl_window *win = term->window;
+
+        if (state == WL_POINTER_BUTTON_STATE_PRESSED) {
+            struct scrollbar_geometry g;
+            if (!render_scrollbar_geometry(term, &g))
+                break;
+
+            /* Grab the thumb where it was clicked, or, when clicking
+             * the track, jump so that the thumb is centered there */
+            const int y = seat->mouse.y;
+            const bool on_thumb =
+                y >= g.thumb_y && y < g.thumb_y + g.thumb_height;
+
+            win->scrollbar.drag_offset =
+                on_thumb ? y - g.thumb_y : g.thumb_height / 2;
+            win->scrollbar.dragging = true;
+            scrollbar_drag_to(term, y);
+        } else {
+            win->scrollbar.dragging = false;
+        }
+
+        render_refresh(term);
+        break;
+    }
+
+    case TERM_SURF_TAB_BAR: {
+        if (state != WL_POINTER_BUTTON_STATE_PRESSED)
+            break;
+
+        struct wl_window *win = term->window;
+        const int idx = tab_bar_tab_at(win, seat->mouse.x);
+        struct terminal *tab = idx >= 0 ? tab_at_index(win, idx) : NULL;
+
+        if (tab == NULL)
+            break;
+
+        if (button == BTN_LEFT) {
+            /* Double-clicking the active tab renames it */
+            const bool was_active = tab == win->term;
+            tab_activate(tab);
+
+            if (was_active && seat->mouse.count == 2)
+                tab_rename_start(tab);
+        } else if (button == BTN_MIDDLE)
+            term_shutdown(tab);
+        break;
+    }
 
     case TERM_SURF_GRID: {
         search_cancel(term);
         urls_reset(term);
+
+        if (term->tab.rename.active)
+            tab_rename_commit(term);
 
         bool cursor_is_on_grid = seat->mouse.col >= 0 && seat->mouse.row >= 0;
 
@@ -3329,6 +3536,18 @@ mouse_scroll(struct seat *seat, int amount, enum wl_pointer_axis axis)
     struct terminal *term = seat->mouse_focus;
     xassert(term != NULL);
 
+    if (term->active_surface == TERM_SURF_SCROLLBAR) {
+        /* Always scrolls the scrollback, even if the client has
+         * enabled mouse reporting */
+        if (axis == WL_POINTER_AXIS_VERTICAL_SCROLL) {
+            if (amount < 0)
+                cmd_scrollback_up(term, -amount);
+            else
+                cmd_scrollback_down(term, amount);
+        }
+        return;
+    }
+
     int button = axis == WL_POINTER_AXIS_VERTICAL_SCROLL
         ? amount < 0 ? BTN_WHEEL_BACK : BTN_WHEEL_FORWARD
         : amount < 0 ? BTN_WHEEL_LEFT : BTN_WHEEL_RIGHT;
@@ -3375,6 +3594,65 @@ mouse_scroll_multiplier(const struct terminal *term, const struct seat *seat)
         : 1.0;
 }
 
+/*
+ * Adds 'delta' to the accumulated scroll amount, and returns the
+ * number of whole steps (negative when scrolling backwards) in it.
+ * The remainder is kept, for the next event.
+ */
+static int
+scroll_steps(double *aggregated, double delta, double step)
+{
+    *aggregated += delta;
+
+    const int steps = (int)(*aggregated / step);  /* Rounds towards zero */
+    *aggregated -= steps * step;
+    return steps;
+}
+
+/*
+ * Scrolling over the tab bar switches tab, one tab per step (e.g. a
+ * wheel notch). Unlike regular scrolling, this is *not* affected by
+ * the scrollback multiplier.
+ */
+static bool
+tab_bar_scroll(struct seat *seat, double *aggregated, double delta,
+               double step)
+{
+    struct terminal *term = seat->mouse_focus;
+
+    if (term->active_surface != TERM_SURF_TAB_BAR)
+        return false;
+
+    const int steps = scroll_steps(aggregated, delta, step);
+    if (steps != 0)
+        tab_cycle(term->window, steps);
+
+    return true;
+}
+
+UNITTEST
+{
+    double agg = 0.;
+
+    /* One notch per 120 */
+    xassert(scroll_steps(&agg, 120., 120.) == 1 && agg == 0.);
+
+    /* Several notches in one event */
+    xassert(scroll_steps(&agg, 240., 120.) == 2 && agg == 0.);
+    xassert(scroll_steps(&agg, -240., 120.) == -2 && agg == 0.);
+
+    /* High-resolution wheel: 4 x 90 is 3 notches, nothing lost */
+    xassert(scroll_steps(&agg, 90., 120.) == 0);
+    xassert(scroll_steps(&agg, 90., 120.) == 1 && agg == 60.);
+    xassert(scroll_steps(&agg, 90., 120.) == 1 && agg == 30.);
+    xassert(scroll_steps(&agg, 90., 120.) == 1 && agg == 0.);
+
+    /* Changing direction cancels out what's left */
+    xassert(scroll_steps(&agg, 90., 120.) == 0);
+    xassert(scroll_steps(&agg, -90., 120.) == 0 && agg == 0.);
+    xassert(scroll_steps(&agg, -150., 120.) == -1 && agg == -30.);
+}
+
 static void
 wl_pointer_axis(void *data, struct wl_pointer *wl_pointer,
                 uint32_t time, uint32_t axis, wl_fixed_t value)
@@ -3389,6 +3667,12 @@ wl_pointer_axis(void *data, struct wl_pointer *wl_pointer,
 
     xassert(seat->mouse_focus != NULL);
     xassert(axis < ALEN(seat->mouse.aggregated));
+
+    if (tab_bar_scroll(seat, &seat->mouse.aggregated[axis],
+                       wl_fixed_to_double(value), 50.))
+    {
+        return;
+    }
 
     const struct terminal *term = seat->mouse_focus;
 
@@ -3419,6 +3703,13 @@ wl_pointer_axis_discrete(void *data, struct wl_pointer *wl_pointer,
         return;
 
     seat->mouse.have_discrete = true;
+
+    if (tab_bar_scroll(seat, &seat->mouse.aggregated_120[axis],
+                       discrete * 120., 120.))
+    {
+        return;
+    }
+
     int amount = discrete;
 
     if (axis == WL_POINTER_AXIS_HORIZONTAL_SCROLL) {
@@ -3459,6 +3750,12 @@ wl_pointer_axis_value120(void *data, struct wl_pointer *wl_pointer,
      * keep what's left (this value will always be less than the
      * per-line value).
      */
+    if (tab_bar_scroll(seat, &seat->mouse.aggregated_120[axis],
+                       value120, 120.))
+    {
+        return;
+    }
+
     const double multiplier = mouse_scroll_multiplier(seat->mouse_focus, seat);
     const double per_line = 120. / multiplier;
 

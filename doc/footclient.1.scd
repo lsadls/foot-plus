@@ -86,6 +86,17 @@ terminal has terminated.
 	example, the new terminal will use *TERM* from the configuration,
 	not footclient's environment.
 
+*--tab*=[_X_:]_COMMAND_[_,_COMMAND_...]
+	Open additional tabs in the new window, each running _COMMAND_.
+	Entries prefixed with a single character (e.g. _1_:zsh) are named
+	tabs; a digit prefix creates a regular visible numbered tab,
+	while a non-digit prefix (e.g. _!_:cmus) creates a hidden tab -
+	not shown in the tab bar and skipped by tab-next/tab-prev,
+	reachable only via the *tab-goto* key binding. An empty command
+	runs the default shell. May be given multiple times, or as a
+	comma separated list. Example:
+	*footclient --tab*=_!:cmus,1:zsh,2:zsh_
+
 *-d*,*--log-level*={*info*,*warning*,*error*,*none*}
 	Log level, used both for log output on stderr as well as
 	syslog. Default: _warning_.

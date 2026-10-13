@@ -42,6 +42,9 @@ void selection_to_primary(
     struct seat *seat, struct terminal *term, uint32_t serial);
 void selection_from_primary(struct seat *seat, struct terminal *term);
 
+/* Answer to "paste N lines?" (security.confirm-paste) */
+void selection_paste_confirm_input(struct terminal *term, xkb_keysym_t sym);
+
 /* Copy text *to* primary/clipboard */
 bool text_to_clipboard(
     struct seat *seat, struct terminal *term, char *text, uint32_t serial);

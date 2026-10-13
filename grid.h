@@ -26,6 +26,13 @@ int grid_row_abs_to_sb(const struct grid *grid, int screen_rows, int abs_row);
 int grid_row_sb_to_abs(const struct grid *grid, int screen_rows, int sb_rel_row);
 
 int grid_sb_start_ignore_uninitialized(const struct grid *grid, int screen_rows);
+
+/*
+ * Number of populated rows (scrollback + screen), and the viewport's
+ * position in it (0 = at the top of the scrollback).
+ */
+void grid_sb_geometry(
+    const struct grid *grid, int screen_rows, int *view_pos, int *total_rows);
 int grid_row_abs_to_sb_precalc_sb_start(
     const struct grid *grid, int sb_start, int abs_row);
 int grid_row_sb_to_abs_precalc_sb_start(

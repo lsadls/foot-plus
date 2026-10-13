@@ -62,6 +62,7 @@ enum binding_aux_type {
     BINDING_AUX_PIPE,
     BINDING_AUX_TEXT,
     BINDING_AUX_REGEX,
+    BINDING_AUX_CHAR,
 };
 
 struct binding_aux {
@@ -77,6 +78,9 @@ struct binding_aux {
         } text;
 
         char *regex_name;
+
+        /* BINDING_AUX_CHAR */
+        unsigned char ch;
     };
 };
 
@@ -297,6 +301,12 @@ struct config {
             OSC52_PASTE_ENABLED,
             OSC52_ENABLED,
         } osc52;
+
+        enum {
+            CONFIRM_PASTE_NEVER,
+            CONFIRM_PASTE_UNSAFE,
+            CONFIRM_PASTE_MULTILINE,
+        } confirm_paste;
     } security;
 
     struct {
@@ -327,6 +337,13 @@ struct config {
             char32_t *text;
         } indicator;
         float multiplier;
+
+        enum {
+            SCROLLBAR_NEVER,
+            SCROLLBAR_AUTO,
+            SCROLLBAR_ALWAYS,
+        } scrollbar;
+        uint16_t scrollbar_width;
     } scrollback;
 
     struct {
@@ -465,6 +482,50 @@ struct config {
     struct {
         uint32_t long_press_delay;
     } touch;
+
+    struct {
+        enum {
+            TABS_NEW_POSITION_AFTER_CURRENT,
+            TABS_NEW_POSITION_LAST,
+        } new_position;
+
+        enum {
+            TABS_SHOW_BAR_AUTO,
+            TABS_SHOW_BAR_ALWAYS,
+            TABS_SHOW_BAR_NEVER,
+        } show_bar;
+
+        enum {
+            TABS_ACTIVATE_ON_CLOSE_RIGHT,
+            TABS_ACTIVATE_ON_CLOSE_LAST_USED,
+        } activate_on_close;
+
+        bool shared_font_size;
+        bool confirm_close;
+        bool confirm_close_multiple;
+
+        /* Tab bar drawn at bottom of window instead of top */
+        bool bar_bottom;
+
+        /* Height of the tab bar strip, in config file pixels */
+        struct pt_or_px bar_height;
+
+        /* Command whose stdout is rendered on the right side of the
+         * tab bar; spawned once, output re-read every second */
+        struct config_spawn_template bar_command;
+
+        /* Maximum width of a tab in the bar; 'none' limits it only to
+         * the tab region width */
+        struct {
+            enum {
+                TAB_MAX_WIDTH_NONE,
+                TAB_MAX_WIDTH_PERCENT,
+                TAB_MAX_WIDTH_ABSOLUTE,
+            } type;
+            float percent;          /* type == TAB_MAX_WIDTH_PERCENT */
+            struct pt_or_px length; /* type == TAB_MAX_WIDTH_ABSOLUTE */
+        } tab_max_width;
+    } tabs;
 
     user_notifications_t notifications;
 };

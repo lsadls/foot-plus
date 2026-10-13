@@ -186,6 +186,23 @@ static const char *const binding_action_map[] = {
     [BIND_ACTION_THEME_SWITCH_DARK] = "color-theme-switch-dark",
     [BIND_ACTION_THEME_SWITCH_LIGHT] = "color-theme-switch-light",
     [BIND_ACTION_THEME_TOGGLE] = "color-theme-toggle",
+    [BIND_ACTION_TAB_NEW] = "tab-new",
+    [BIND_ACTION_TAB_CLOSE] = "tab-close",
+    [BIND_ACTION_TAB_NEXT] = "tab-next",
+    [BIND_ACTION_TAB_PREV] = "tab-prev",
+    [BIND_ACTION_TAB_MOVE_LEFT] = "tab-move-left",
+    [BIND_ACTION_TAB_MOVE_RIGHT] = "tab-move-right",
+    [BIND_ACTION_TAB_RENAME] = "tab-rename",
+    [BIND_ACTION_TAB_FIRST] = "tab-first",
+    [BIND_ACTION_TAB_LAST] = "tab-last",
+    [BIND_ACTION_TAB_LAST_USED] = "tab-last-used",
+    [BIND_ACTION_TAB_MOVE_FIRST] = "tab-move-first",
+    [BIND_ACTION_TAB_MOVE_LAST] = "tab-move-last",
+    [BIND_ACTION_TAB_CLOSE_LEFT] = "tab-close-left",
+    [BIND_ACTION_TAB_CLOSE_RIGHT] = "tab-close-right",
+    [BIND_ACTION_TAB_CLOSE_OTHERS] = "tab-close-others",
+    [BIND_ACTION_TRANSPARENCY_TOGGLE] = "transparency-toggle",
+    [BIND_ACTION_TAB_GOTO] = "tab-goto",
 
     /* Mouse-specific actions */
     [BIND_ACTION_SCROLLBACK_UP_MOUSE] = "scrollback-up-mouse",
@@ -1039,6 +1056,18 @@ parse_section_main(struct context *ctx)
     else if (streq(key, "resize-by-cells"))
         return value_to_bool(ctx, &conf->resize_by_cells);
 
+    else if (streq(key, "confirm-close-tabs")) {
+        LOG_WARN("%s:%d: [main].confirm-close-tabs: deprecated; "
+                 "use [tabs].confirm-close instead", ctx->path, ctx->lineno);
+
+        user_notification_add(
+            &conf->notifications,
+            USER_NOTIFICATION_DEPRECATED,
+            xstrdup("[main].confirm-close-tabs: use [tabs].confirm-close instead"));
+
+        return value_to_bool(ctx, &conf->tabs.confirm_close);
+    }
+
     else if (streq(key, "resize-keep-grid"))
         return value_to_bool(ctx, &conf->resize_keep_grid);
 
@@ -1202,6 +1231,13 @@ parse_section_security(struct context *ctx)
             ctx,
             (const char *[]){"disabled", "copy-enabled", "paste-enabled", "enabled", NULL},
             (int *)&conf->security.osc52);
+    } else if (streq(key, "confirm-paste")) {
+        _Static_assert(sizeof(conf->security.confirm_paste) == sizeof(int),
+                       "enum is not 32-bit");
+        return value_to_enum(
+            ctx,
+            (const char *[]){"never", "unsafe", "multiline", NULL},
+            (int *)&conf->security.confirm_paste);
     } else {
         LOG_CONTEXTUAL_ERR("not a valid option: %s", key);
         return false;
@@ -1292,6 +1328,19 @@ parse_section_scrollback(struct context *ctx)
 
     else if (streq(key, "multiplier"))
         return value_to_float(ctx, &conf->scrollback.multiplier);
+
+    else if (streq(key, "scrollbar")) {
+        _Static_assert(sizeof(conf->scrollback.scrollbar) == sizeof(int),
+            "enum is not 32-bit");
+
+        return value_to_enum(
+            ctx,
+            (const char *[]){"never", "auto", "always", NULL},
+            (int *)&conf->scrollback.scrollbar);
+    }
+
+    else if (streq(key, "scrollbar-width"))
+        return value_to_uint16(ctx, 10, &conf->scrollback.scrollbar_width);
 
     else {
         LOG_CONTEXTUAL_ERR("not a valid option: %s", key);
@@ -1806,6 +1855,7 @@ free_binding_aux(struct binding_aux *aux)
     case BINDING_AUX_PIPE: free_argv(&aux->pipe); break;
     case BINDING_AUX_TEXT: free(aux->text.data); break;
     case BINDING_AUX_REGEX: free(aux->regex_name); break;
+    case BINDING_AUX_CHAR: break;
     }
 }
 
@@ -1899,6 +1949,9 @@ binding_aux_equal(const struct binding_aux *a,
 
     case BINDING_AUX_REGEX:
         return streq(a->regex_name, b->regex_name);
+
+    case BINDING_AUX_CHAR:
+        return a->ch == b->ch;
     }
 
     BUG("invalid AUX type: %d", a->type);
@@ -2373,6 +2426,68 @@ parse_key_binding_section(struct context *ctx,
                           const char *const action_map[static action_count],
                           struct config_key_binding_list *bindings)
 {
+    /* tab-goto=<name>:<key combo>[,...] - jumps to the tab named
+     * <name> (from the --tab spec prefix, e.g. "!":cmus). Handled
+     * specially since the name is dynamic */
+    if (action_map == binding_action_map && streq(ctx->key, "tab-goto")) {
+        /* Syntax: <char>:<key combo>[,<char>:<key combo>...] */
+        char *copy = xstrdup(ctx->value);
+
+        char *p0 = copy;
+        while (*p0 == ' ' || *p0 == '\t')
+            p0++;
+        if (*p0 == '\0') {
+            LOG_CONTEXTUAL_ERR("tab-goto: expected <name>:<key combo>");
+            free(copy);
+            return false;
+        }
+
+        char *saveptr = NULL;
+        for (char *entry = strtok_r(copy, ",", &saveptr);
+             entry != NULL;
+             entry = strtok_r(NULL, ", ", &saveptr))
+        {
+            char *p = entry;
+            while (*p == ' ' || *p == '\t')
+                p++;
+
+            const unsigned char name = (unsigned char)*p++;
+            while (*p == ' ' || *p == '\t')
+                p++;
+
+            if (*p++ != ':') {
+                LOG_CONTEXTUAL_ERR(
+                    "tab-goto: expected <name>:<key combo>, got %s", entry);
+                free(copy);
+                return false;
+            }
+
+            struct binding_aux aux = {
+                .type = BINDING_AUX_CHAR,
+                .master_copy = true,
+                .ch = name,
+            };
+
+            /* Temporarily point the context at the key combo */
+            const char *old_value = ctx->value;
+            ctx->value = p;
+
+            bool ok = value_to_key_combos(
+                ctx, BIND_ACTION_TAB_GOTO, &aux, bindings, KEY_BINDING);
+
+            ctx->value = old_value;
+
+            if (!ok) {
+                free_binding_aux(&aux);
+                free(copy);
+                return false;
+            }
+        }
+
+        free(copy);
+        return true;
+    }
+
     for (int action = 0; action < action_count; action++) {
         if (action_map[action] == NULL)
             continue;
@@ -3024,6 +3139,103 @@ parse_section_touch(struct context *ctx) {
 }
 
 static bool
+parse_section_tabs(struct context *ctx)
+{
+    struct config *conf = ctx->conf;
+    const char *key = ctx->key;
+
+    if (streq(key, "new-tab-position")) {
+        _Static_assert(sizeof(conf->tabs.new_position) == sizeof(int),
+            "enum is not 32-bit");
+
+        return value_to_enum(
+            ctx,
+            (const char *[]){"after-current", "last", NULL},
+            (int *)&conf->tabs.new_position);
+    }
+
+    else if (streq(key, "show-bar")) {
+        _Static_assert(sizeof(conf->tabs.show_bar) == sizeof(int),
+            "enum is not 32-bit");
+
+        return value_to_enum(
+            ctx,
+            (const char *[]){"auto", "always", "never", NULL},
+            (int *)&conf->tabs.show_bar);
+    }
+
+    else if (streq(key, "activate-on-close")) {
+        _Static_assert(sizeof(conf->tabs.activate_on_close) == sizeof(int),
+            "enum is not 32-bit");
+
+        return value_to_enum(
+            ctx,
+            (const char *[]){"right", "last-used", NULL},
+            (int *)&conf->tabs.activate_on_close);
+    }
+
+    else if (streq(key, "shared-font-size"))
+        return value_to_bool(ctx, &conf->tabs.shared_font_size);
+
+    else if (streq(key, "confirm-close"))
+        return value_to_bool(ctx, &conf->tabs.confirm_close);
+
+    else if (streq(key, "confirm-close-multiple"))
+        return value_to_bool(ctx, &conf->tabs.confirm_close_multiple);
+
+    else if (streq(key, "bar-bottom"))
+        return value_to_bool(ctx, &conf->tabs.bar_bottom);
+
+    else if (streq(key, "bar-height"))
+        return value_to_pt_or_px(ctx, &conf->tabs.bar_height);
+
+    else if (streq(key, "bar-command"))
+        return value_to_spawn_template(ctx, &conf->tabs.bar_command);
+
+    else if (streq(key, "bar-tab-max-width")) {
+        if (streq(ctx->value, "none")) {
+            conf->tabs.tab_max_width.type = TAB_MAX_WIDTH_NONE;
+            return true;
+        }
+
+        const size_t len = strlen(ctx->value);
+        if (len >= 1 && ctx->value[len - 1] == '%') {
+            errno = 0;
+            char *end = NULL;
+
+            float percent = strtof(ctx->value, &end);
+            if (!(len > 1 && errno == 0 && end == ctx->value + len - 1) ||
+                percent < 0.f)
+            {
+                LOG_CONTEXTUAL_ERR(
+                    "invalid percent value (must be in the form 50%%)");
+                return false;
+            }
+
+            conf->tabs.tab_max_width.percent = percent / 100.;
+            conf->tabs.tab_max_width.type = TAB_MAX_WIDTH_PERCENT;
+            return true;
+        }
+
+        bool ret = value_to_pt_or_px(ctx, &conf->tabs.tab_max_width.length);
+        if (ret) {
+            const struct pt_or_px *v = &conf->tabs.tab_max_width.length;
+            if (v->px < 0) {
+                LOG_CONTEXTUAL_ERR("width cannot be negative");
+                return false;
+            }
+            conf->tabs.tab_max_width.type = TAB_MAX_WIDTH_ABSOLUTE;
+        }
+        return ret;
+    }
+
+    else {
+        LOG_CONTEXTUAL_ERR("not a valid option: %s", key);
+        return false;
+    }
+}
+
+static bool
 parse_key_value(char *kv, char **section, const char **key, const char **value)
 {
     bool section_is_needed = section != NULL;
@@ -3107,6 +3319,7 @@ enum section {
     SECTION_ENVIRONMENT,
     SECTION_TWEAK,
     SECTION_TOUCH,
+    SECTION_TABS,
 
     SECTION_COUNT,
 };
@@ -3139,6 +3352,7 @@ static const struct {
     [SECTION_ENVIRONMENT] =     {&parse_section_environment, "environment"},
     [SECTION_TWEAK] =           {&parse_section_tweak, "tweak"},
     [SECTION_TOUCH] =           {&parse_section_touch, "touch"},
+    [SECTION_TABS] =            {&parse_section_tabs, "tabs"},
 };
 
 static_assert(ALEN(section_info) == SECTION_COUNT, "section info array size mismatch");
@@ -3384,6 +3598,12 @@ add_default_key_bindings(struct config *conf)
         {BIND_ACTION_UNICODE_INPUT, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_u}}},
         {BIND_ACTION_PROMPT_PREV, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_z}}},
         {BIND_ACTION_PROMPT_NEXT, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_x}}},
+        {BIND_ACTION_TAB_NEW, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_t}}},
+        {BIND_ACTION_TAB_CLOSE, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_w}}},
+        {BIND_ACTION_TAB_NEXT, m(XKB_MOD_NAME_CTRL), {{XKB_KEY_Next}}},
+        {BIND_ACTION_TAB_PREV, m(XKB_MOD_NAME_CTRL), {{XKB_KEY_Prior}}},
+        {BIND_ACTION_TAB_MOVE_LEFT, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_Prior}}},
+        {BIND_ACTION_TAB_MOVE_RIGHT, m(XKB_MOD_NAME_CTRL "+" XKB_MOD_NAME_SHIFT), {{XKB_KEY_Next}}},
     };
 
     conf->bindings.key.count = ALEN(bindings);
@@ -3549,6 +3769,7 @@ config_load(struct config *conf, const char *conf_path,
         .uppercase_regex_insert = true,
         .security = {
             .osc52 = OSC52_ENABLED,
+            .confirm_paste = CONFIRM_PASTE_UNSAFE,
         },
         .bell = {
             .urgent = false,
@@ -3575,6 +3796,8 @@ config_load(struct config *conf, const char *conf_path,
                 .text = xc32dup(U""),
             },
             .multiplier = 3.,
+            .scrollbar = SCROLLBAR_NEVER,
+            .scrollbar_width = 8,
         },
         .colors_dark = {
             .fg = default_foreground,
@@ -3665,6 +3888,19 @@ config_load(struct config *conf, const char *conf_path,
 
         .touch = {
             .long_press_delay = 400,
+        },
+
+        .tabs = {
+            .new_position = TABS_NEW_POSITION_AFTER_CURRENT,
+            .show_bar = TABS_SHOW_BAR_AUTO,
+            .activate_on_close = TABS_ACTIVATE_ON_CLOSE_RIGHT,
+            .shared_font_size = true,
+            .confirm_close = true,
+            .confirm_close_multiple = true,
+            .bar_bottom = false,
+            .bar_height = {.pt = 13},
+            .bar_command = {.argv = {.args = NULL}},
+            .tab_max_width = {.type = TAB_MAX_WIDTH_NONE},
         },
 
         .env_vars = tll_init(),
@@ -3872,6 +4108,8 @@ key_binding_list_clone(struct config_key_binding_list *dst,
             tll_push_back(new->modifiers, xstrdup(it->item));
 
         switch (old->aux.type) {
+        case BINDING_AUX_CHAR:
+            break;
         case BINDING_AUX_NONE:
             last_master_argv = NULL;
             last_master_text_data = NULL;
@@ -3935,6 +4173,7 @@ config_clone(const struct config *old)
     conf->scrollback.indicator.text = xc32dup(old->scrollback.indicator.text);
     conf->server_socket_path = xstrdup(old->server_socket_path);
     spawn_template_clone(&conf->bell.command, &old->bell.command);
+    spawn_template_clone(&conf->tabs.bar_command, &old->tabs.bar_command);
     spawn_template_clone(&conf->desktop_notifications.command,
                          &old->desktop_notifications.command);
     spawn_template_clone(&conf->desktop_notifications.command_action_arg,
@@ -4034,6 +4273,7 @@ config_free(struct config *conf)
     free(conf->toplevel_tag);
     free(conf->word_delimiters);
     spawn_template_free(&conf->bell.command);
+    spawn_template_free(&conf->tabs.bar_command);
     free(conf->scrollback.indicator.text);
     spawn_template_free(&conf->desktop_notifications.command);
     spawn_template_free(&conf->desktop_notifications.command_action_arg);

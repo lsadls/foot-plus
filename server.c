@@ -19,6 +19,8 @@
 #include "log.h"
 
 #include "client-protocol.h"
+#include "render.h"
+#include "tokenize.h"
 #include "terminal.h"
 #include "util.h"
 #include "wayland.h"
@@ -357,6 +359,20 @@ fdm_client(struct fdm *fdm, int fd, int events, void *data)
         LOG_DBG("env[%hu] = %.*s", i, e.len, envp[i]);
     }
 
+    /* Extra tabs */
+    tll(const char *) extra_tabs = tll_init();
+    for (uint16_t i = 0; i < cdata.tab_count; i++) {
+        struct client_string t;
+        CHECK_BUF(sizeof(t));
+        memcpy(&t, p, sizeof(t)); p += sizeof(t);
+
+        CHECK_BUF_AND_NULL(t.len);
+        const char *str = (const char *)p;
+        p += t.len;
+        LOG_DBG("tab[%hu] = %.*s", i, t.len, str);
+        tll_push_back(extra_tabs, str);
+    }
+
 #undef CHECK_BUF_AND_NULL
 #undef CHECK_BUF
 
@@ -388,17 +404,105 @@ fdm_client(struct fdm *fdm, int fd, int events, void *data)
         .conf = conf,
     };
 
+    /*
+     * The first --tab entry names the *main* tab, like in non-server
+     * 'foot': its command replaces the client's argv (only when the
+     * client sent no command of its own), and its name/visibility are
+     * applied below. The entry itself is not spawned again as an
+     * extra tab, so that footclient ends up with the same number of
+     * tabs as an equivalent 'foot' invocation. This keeps the wire
+     * protocol unchanged.
+     */
+    int main_argc = cdata.argc;
+    char **main_argv = argv;
+    char *main_spec = NULL;
+    unsigned char main_name = 0;
+    bool main_hidden = false;
+    char **main_argv_allocated = NULL;
+
+    if (tll_length(extra_tabs) > 0) {
+        main_spec = xstrdup(tll_front(extra_tabs));
+        tll_pop_front(extra_tabs);
+
+        const char *cmd = main_spec;
+        if (main_spec[0] != '\0' && main_spec[1] == ':') {
+            main_name = (unsigned char)main_spec[0];
+            main_hidden = main_spec[0] < '0' || main_spec[0] > '9';
+            cmd = main_spec + 2;
+        }
+
+        if (cdata.argc == 0 && *cmd != '\0') {
+            if (!tokenize_cmdline(cmd, &main_argv_allocated)) {
+                LOG_ERR("main tab: failed to tokenize: %s", cmd);
+                free(main_spec);
+                goto shutdown;
+            }
+            if (main_argv_allocated != NULL) {
+                main_argv = main_argv_allocated;
+                main_argc = 0;
+                while (main_argv[main_argc] != NULL)
+                    main_argc++;
+            }
+        }
+    }
+
     instance->terminal = term_init(
         conf != NULL ? conf : server->conf,
         server->fdm, server->reaper, server->wayl, "footclient", cwd, token,
-        NULL, cdata.argc, argv, (const char *const *)envp,
+        NULL, main_argc, main_argv, (const char *const *)envp, NULL,
         &term_shutdown_handler, instance);
+
+    if (main_argv_allocated != NULL) {
+        /* slave_spawn() consumed argv in the forked slave; free our copy */
+        for (int i = 0; main_argv_allocated[i] != NULL; i++)
+            free(main_argv_allocated[i]);
+        free(main_argv_allocated);
+    }
+    free(main_spec);
 
     if (instance->terminal == NULL) {
         LOG_ERR("failed to instantiate new terminal");
         client_send_exit_code(client, -26);
         instance_destroy(instance, -1);
         goto shutdown;
+    }
+
+    /* Spawn the extra tabs requested with --tab. Entries without a
+     * numeric prefix are hidden tabs. Each extra tab is its own
+     * instance (owned by the server), sharing the main window */
+    tll_foreach(extra_tabs, it) {
+        const char *spec = it->item;
+
+        struct terminal_instance *tab_instance = xmalloc(sizeof(*tab_instance));
+
+        *tab_instance = (struct terminal_instance) {
+            .client = NULL,
+            .server = server,
+            .conf = NULL,
+        };
+
+        tab_instance->terminal = term_init_extra_tab(
+            conf != NULL ? conf : server->conf,
+            server->fdm, server->reaper, server->wayl,
+            "footclient", cwd, token,
+            instance->terminal->window, spec,
+            &term_shutdown_handler, tab_instance);
+
+        if (tab_instance->terminal == NULL) {
+            free(tab_instance);
+            continue;
+        }
+
+        /* Server owns the instance */
+        tll_push_back(server->terminals, tab_instance);
+    }
+    tll_free(extra_tabs);
+
+    if (instance->terminal->tab.name == 0 &&
+        instance->terminal->tab.hidden == false && main_name != 0)
+    {
+        instance->terminal->tab.name = main_name;
+        instance->terminal->tab.hidden = main_hidden;
     }
 
     if (cdata.no_wait) {
@@ -426,11 +530,9 @@ shutdown:
     fdm_del(fdm, fd);
     client->fd = -1;
 
-    if (client->instance != NULL &&
-        !client->instance->terminal->shutdown.in_progress)
-    {
+    if (client->instance != NULL)
         term_shutdown(client->instance->terminal);
-    } else
+    else
         client_destroy(client);
 
     return true;

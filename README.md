@@ -1,6 +1,60 @@
-# ![Logo: a terminal with a foot shaped prompt](icons/hicolor/48x48/apps/foot.png) foot
+# ![Logo: a terminal with a foot shaped prompt](icons/hicolor/48x48/apps/foot.png) foot-plus
 
-The fast, lightweight and minimalistic Wayland terminal emulator.
+Fast, lightweight and minimalistic Wayland terminal emulator — an
+**unofficial fork of [foot](https://codeberg.org/dnkl/foot)** that adds
+tabs, based on foot 1.28.0.
+
+> [!NOTE]
+> **foot-plus** is a personal fork; it is not affiliated with, or supported
+> by, the foot project. Please report issues
+> [here](https://github.com/lsadls/foot-plus/issues), not upstream.
+>
+> It builds on the excellent
+> [foot-tabs](https://github.com/joshuarosato/foot-tabs) fork by Joshua
+> Rosato, carrying its tab support (and more) forward.
+>
+> ### What this fork adds
+>
+> **Tabs**
+>
+> - <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>t</kbd> new tab,
+>   <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>w</kbd> close tab
+> - <kbd>ctrl</kbd>+<kbd>page down</kbd>/<kbd>page up</kbd> next/previous
+>   tab; <kbd>ctrl</kbd>+<kbd>1</kbd>..<kbd>9</kbd> go to tab
+> - <kbd>ctrl</kbd>+<kbd>shift</kbd>+<kbd>page down</kbd>/<kbd>page up</kbd>
+>   move tab (or drag it with the mouse); plus tab-move-first/last,
+>   tab-first/last/last-used and tab-close-left/right/others bindings
+> - Tab bar: click to switch, double-click to rename, middle-click to
+>   close, scroll to cycle
+> - Labels show the tab's foreground process; an inactive tab with pending
+>   output gets a muted background fill; a `• ` prefix marks attention
+> - Unlimited tabs (the old 9-tab limit is gone); new tabs open in `$HOME`
+> - `--tab=[X:]COMMAND[,COMMAND...]` (foot; `-B` for footclient) opens extra
+>   tabs — a non-digit name prefix creates a *hidden* tab (kept out of the bar
+>   and out of tab-next/prev), reachable via the `tab-goto` binding
+> - Tab bar options: `bar-bottom`, `bar-height`, `bar-tab-max-width`
+>   (none/`%`/pt/px) and `bar-command`
+> - `bar-command` runs a command once per window and draws the last line of
+>   its stdout right-aligned in the bar, refreshed once a second (e.g. a
+>   clock, CPU or battery readout)
+> - `[tabs]` options: `new-tab-position`, `show-bar`, `activate-on-close`,
+>   `shared-font-size`, `confirm-close`, `confirm-close-multiple`
+>
+> **Performance / memory**
+>
+> - Background tabs release all their render buffers on deactivation and do
+>   a full repaint when re-activated, so an idle tab costs no shm memory
+> - Tab-bar layout is computed in a single pass (no O(tabs²) extent calls
+>   per frame); text is measured with fcft text-run shaping
+>
+> **Other**
+>
+> - Optional scrollbar (`[scrollback] scrollbar`, `scrollbar-width`)
+> - Confirm before pasting multiple lines that would run as commands
+>   (`[security] confirm-paste`)
+> - `transparency-toggle` key binding
+>
+> See `tab-*` and the other new keys in **foot.ini**(5) for all options.
 
 [![CI status](https://ci.codeberg.org/api/badges/dnkl/foot/status.svg)](https://ci.codeberg.org/dnkl/foot)
 
@@ -73,6 +127,26 @@ The fast, lightweight and minimalistic Wayland terminal emulator.
 # Installing
 
 See [INSTALL.md](INSTALL.md).
+
+Arch Linux users can install the `foot-plus` AUR package.
+
+
+# Merging upstream foot
+
+This fork is a single commit on top of the exact upstream foot 1.28.0
+release (tag `1.28.0`), so upstream can be merged with normal git:
+
+```sh
+git remote add upstream https://codeberg.org/dnkl/foot.git   # once
+git fetch upstream --tags
+git merge upstream/master        # or a release tag, e.g. upstream/1.29.0
+# resolve conflicts, then:
+git push origin master
+```
+
+The shared ancestor (`1.28.0`) lets git fast-forward unchanged files and
+only ask you to resolve files that both sides touched. Merging release tags
+one at a time keeps conflicts small.
 
 
 ## Configuration

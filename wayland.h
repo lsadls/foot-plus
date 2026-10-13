@@ -36,6 +36,8 @@
 #include "config.h"
 #include "cursor-shape.h"
 #include "fdm.h"
+#include "tabbar_cmd.h"
+#include "tabs.h"
 
 /* Forward declarations */
 struct terminal;
@@ -368,7 +370,8 @@ struct xdg_activation_token_context {
 
 struct wayland;
 struct wl_window {
-    struct terminal *term;
+    struct terminal *term;  /* The active tab */
+    tll(struct terminal *) tabs;
     struct wayl_surface surface;
     struct xdg_surface *xdg_surface;
     struct xdg_toplevel *xdg_toplevel;
@@ -396,6 +399,46 @@ struct wl_window {
         bool maximize:1;
         bool minimize:1;
     } wm_capabilities;
+
+    struct {
+        struct wayl_sub_surface surface;
+        struct fcft_font *font;
+        float font_scale;
+        bool dirty;
+    } tab_bar;
+
+    /* Configured command whose stdout is drawn in the right half of the
+     * tab bar. Spawned once per window, shared by all its tabs */
+    struct tabbar_cmd tabbar_cmd;
+
+    /*
+     * Asking the user to confirm closing multiple tabs; either the
+     * whole window, or the tabs to the left/right of, or other than,
+     * the active tab.
+     */
+    enum tab_close_scope confirm_close;
+
+    /* Incremented each time a tab is activated */
+    uint64_t tab_activations;
+
+    /* Transparency disabled by the user (transparency-toggle) */
+    bool force_opaque;
+
+    struct {
+        struct wayl_sub_surface surface;
+        bool visible;
+
+        /* Pointer is over the scrollbar */
+        bool hover;
+
+        /* Dragging the thumb, with the pointer this far into it */
+        bool dragging;
+        int drag_offset;
+
+        /* Last rendered state; to skip re-rendering when unchanged */
+        int x, y, width, height, thumb_y, thumb_height, thumb_width;
+        uint32_t thumb_color;
+    } scrollbar;
 
     struct wayl_sub_surface search;
     struct wayl_sub_surface scrollback_indicator;
@@ -546,10 +589,22 @@ void wayl_surface_scale_explicit_width_height(
 struct wl_window *wayl_win_init(struct terminal *term, const char *token);
 void wayl_win_destroy(struct wl_window *win);
 
+void wayl_win_tab_sync_size(
+    struct terminal *term, float logical_width, float logical_height,
+    bool force);
+void wayl_win_tab_bar_reload_font(struct wl_window *win);
+
 void wayl_win_scale(struct wl_window *win, const struct buffer *buf);
 void wayl_win_alpha_changed(struct wl_window *win);
 bool wayl_win_set_urgent(struct wl_window *win);
 bool wayl_win_ring_bell(const struct wl_window *win);
+
+/* True when the background alpha should be ignored */
+static inline bool
+wayl_win_ignore_alpha(const struct wl_window *win)
+{
+    return win->is_fullscreen || win->force_opaque;
+}
 
 bool wayl_win_csd_titlebar_visible(const struct wl_window *win);
 bool wayl_win_csd_borders_visible(const struct wl_window *win);

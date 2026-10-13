@@ -1,5 +1,6 @@
 # Changelog
 
+* [Unreleased](#unreleased)
 * [1.28.0](#1-28-0)
 * [1.27.0](#1-27-0)
 * [1.26.1](#1-26-1)
@@ -68,6 +69,80 @@
 * [1.2.2](#1-2-2)
 * [1.2.1](#1-2-1)
 * [1.2.0](#1-2-0)
+
+
+## Unreleased
+### Added
+
+* Tabs. New key bindings: `tab-new` (default `Control+Shift+t`),
+  `tab-close` (default `Control+Shift+w`), `tab-next` (default
+  `Control+Next`), `tab-prev` (default `Control+Prior`), and
+  `tab-goto-1` .. `tab-goto-9` (default `Control+1` .. `Control+9`),
+  `tab-move-left` (default
+  `Control+Shift+Prior`), `tab-move-right` (default
+  `Control+Shift+Next`), `tab-rename`, and (unbound by default)
+  `tab-first`, `tab-last`, `tab-last-used` (toggle between the two
+  most recently used tabs), `tab-move-first`, `tab-move-last`,
+  `tab-close-left`, `tab-close-right` and `tab-close-others`. A tab bar is shown when a
+  window has more than one tab; click to switch tab, drag to move it,
+  double-click to rename, middle-click to close, and scroll to cycle
+  tabs. A window
+  can have at most 9 tabs. Background tabs that ring the bell, or send
+  a desktop notification, are marked in the tab bar.
+* Scrollbar: `scrollback.scrollbar=never|auto|always` (default
+  `never`), and `scrollback.scrollbar-width`. Drag or click the
+  scrollbar to scroll.
+* `security.confirm-paste` option. When pasting text with multiple
+  lines, ask for confirmation before sending it: `never`, `unsafe`
+  (the default; only when the application has not enabled bracketed
+  paste, i.e. when each line would be executed immediately), or
+  `multiline`.
+* `transparency-toggle` key binding (unbound by default), toggling
+  background transparency on and off, for all tabs in the window.
+* `[tabs]` section, with the options:
+  - `show-bar`: show the tab bar when the window has more than one
+    tab (`auto`, the default), `always`, or `never`.
+  - `confirm-close`: when enabled (the default), closing a window with
+    more than one tab asks for confirmation. Previously named
+    `[main].confirm-close-tabs` (deprecated, but still accepted).
+  - `confirm-close-multiple`: when enabled (the default), closing
+    more than one tab with `tab-close-left`, `tab-close-right` or
+    `tab-close-others` asks for confirmation.
+  - `new-tab-position`: open new tabs after the current tab (the
+    default), or after the last tab.
+  - `activate-on-close`: when closing the current tab, switch to the
+    tab to its right (the default), or to the most recently used tab.
+  - `shared-font-size`: font size changes apply to all tabs in the
+    window (the default), or only the current tab.
+
+
+### Changed
+
+* The `quit` key binding, and closing the window, now closes all tabs
+  in the window.
+
+* Cells with a non-default background colors, but otherwise empty, are
+  now preserved (not removed) when resizing a terminal window
+  ([#2462][2462]).
+
+[2462]: https://codeberg.org/dnkl/foot/issues/2462
+
+
+### Deprecated
+### Removed
+### Fixed
+
+* Use-after-free during shutdown when footclient and the client
+  application exit simultaneously in a short window ([#2432][2432]).
+* Crash when a buggy compositor sends an `ime_enter()` event with a
+  `NULL` surface ([#2467][2467]).
+
+[2342]: https://codeberg.org/dnkl/foot/pulls/2432
+[2342]: https://codeberg.org/dnkl/foot/issues/2467
+
+
+### Security
+### Contributors
 
 
 ## 1.28.0

@@ -64,6 +64,17 @@ grid_sb_start_ignore_uninitialized(const struct grid *grid, int screen_rows)
     return scrollback_start;
 }
 
+void
+grid_sb_geometry(const struct grid *grid, int screen_rows,
+                 int *view_pos, int *total_rows)
+{
+    const int sb_start = grid_sb_start_ignore_uninitialized(grid, screen_rows);
+
+    *view_pos = grid_row_abs_to_sb_precalc_sb_start(grid, sb_start, grid->view);
+    *total_rows = grid_row_abs_to_sb_precalc_sb_start(
+        grid, sb_start, grid->offset) + screen_rows;
+}
+
 int
 grid_row_abs_to_sb_precalc_sb_start(const struct grid *grid, int sb_start,
                                     int abs_row)
@@ -927,7 +938,7 @@ grid_resize_and_reflow(
         int col_count = 0;
         for (int c = old_cols - 1; c >= 0; c--) {
             const struct cell *cell = &old_row->cells[c];
-            if (!(cell->wc == 0 || cell->wc == CELL_SPACER)) {
+            if (!(cell->wc == 0 || cell->wc == CELL_SPACER) || cell->attrs.bg_src != COLOR_DEFAULT) {
                 col_count = c + 1;
                 break;
             }
@@ -1087,20 +1098,34 @@ grid_resize_and_reflow(
                     new_row->shell_integration.cmd_end = new_col_idx;
 
                 if (unlikely(width > new_cols)) {
-                    /* Wide character no longer fits on a row, replace
-                       it with a single space */
-                    new_row->cells[new_col_idx++].wc = 0;
-                    c++;
+                    /*
+                     * Wide character no longer fits on a row, replace
+                     * it with a single space.
+                     */
+                    if (i == 0) {
+                        /*
+                         * Don't increment new_col_idx here, to ensure
+                         * all the TP logic above maps to *this* cell
+                         * for the subsequent SPACER cells we're
+                         * skipping.
+                         */
+                        new_row->cells[new_col_idx] = *old;
+                        new_row->cells[new_col_idx].wc = 0;
+                    }
 
-                    /* Walk past the SPACER cells */
-                    for (int i = 1; i < width; i++, c++, old++)
-                        ;
-
-                    /* Continue with next character in the *old* grid */
-                    break;
+                    if (i == width - 1) {
+                        /*
+                         * Last SPACER - advance new_col_idx. This
+                         * ensures we're consistent with the above -
+                         * we've replaced a wide character with a
+                         * single, empty cell, and advanced
+                         * new_col_idx *once*.
+                         */
+                        new_col_idx++;
+                    }
+                } else {
+                    new_row->cells[new_col_idx++] = *old;
                 }
-
-                new_row->cells[new_col_idx++] = *old;
 
                 /*
                  * TODO: simulate LCF instead?

@@ -46,6 +46,23 @@ enum bind_action_normal {
     BIND_ACTION_THEME_SWITCH_DARK,
     BIND_ACTION_THEME_SWITCH_LIGHT,
     BIND_ACTION_THEME_TOGGLE,
+    BIND_ACTION_TAB_NEW,
+    BIND_ACTION_TAB_CLOSE,
+    BIND_ACTION_TAB_NEXT,
+    BIND_ACTION_TAB_PREV,
+    BIND_ACTION_TAB_MOVE_LEFT,
+    BIND_ACTION_TAB_MOVE_RIGHT,
+    BIND_ACTION_TAB_RENAME,
+    BIND_ACTION_TAB_FIRST,
+    BIND_ACTION_TAB_LAST,
+    BIND_ACTION_TAB_LAST_USED,
+    BIND_ACTION_TAB_MOVE_FIRST,
+    BIND_ACTION_TAB_MOVE_LAST,
+    BIND_ACTION_TAB_CLOSE_LEFT,
+    BIND_ACTION_TAB_CLOSE_RIGHT,
+    BIND_ACTION_TAB_CLOSE_OTHERS,
+    BIND_ACTION_TRANSPARENCY_TOGGLE,
+
 
     /* Mouse specific actions - i.e. they require a mouse coordinate */
     BIND_ACTION_SCROLLBACK_UP_MOUSE,
@@ -59,8 +76,14 @@ enum bind_action_normal {
     BIND_ACTION_SELECT_QUOTE,
     BIND_ACTION_SELECT_ROW,
 
-    BIND_ACTION_KEY_COUNT = BIND_ACTION_THEME_TOGGLE + 1,
-    BIND_ACTION_COUNT = BIND_ACTION_SELECT_ROW + 1,
+    /* Jump to the tab named by the binding's aux character
+     * (BINDING_AUX_CHAR); names come from the --tab spec prefix,
+     * e.g. "!":cmus, configured as
+     * tab-goto=ctrl+shift+1:!,ctrl+shift+2:@ */
+    BIND_ACTION_TAB_GOTO,
+
+    BIND_ACTION_KEY_COUNT = BIND_ACTION_TAB_GOTO + 1,
+    BIND_ACTION_COUNT = BIND_ACTION_TAB_GOTO + 1,
 };
 
 enum bind_action_search {

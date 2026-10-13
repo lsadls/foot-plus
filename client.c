@@ -89,7 +89,9 @@ print_usage(const char *prog_name)
         "  -H,--hold                                remain open after child process exits\n"
         "  -N,--no-wait                             detach the client process from the running terminal, exiting immediately\n"
         "  -o,--override=[section.]key=value        override configuration option\n"
-        "  -E, --client-environment                 exec shell using footclient's environment, instead of the server's\n"
+        "  -E, --client-environment                 exec shell using footclient's environment, instead of the server's\n"        "     --tab=[N:]COMMAND                     additional tab; entries without a numeric\n"
+        "                                            prefix are hidden tabs (comma separated\n"
+        "                                            list or repeated option)\n"
         "  -d,--log-level={info|warning|error|none} log level (warning)\n"
         "  -l,--log-colorize=[{never|always|auto}]  enable/disable colorization of log output on stderr\n"
         "  -v,--version                             show the version number and quit\n"
@@ -171,6 +173,7 @@ main(int argc, char *const *argv)
         {"no-wait",            no_argument,       NULL, 'N'},
         {"override",           required_argument, NULL, 'o'},
         {"client-environment", no_argument,       NULL, 'E'},
+        {"tab",                required_argument, NULL, 'B'},
         {"log-level",          required_argument, NULL, 'd'},
         {"log-colorize",       optional_argument, NULL, 'l'},
         {"version",            no_argument,       NULL, 'v'},
@@ -204,9 +207,10 @@ main(int argc, char *const *argv)
     struct client_string *cargv = NULL;
     string_list_t overrides = tll_init();
     string_list_t envp = tll_init();
+    string_list_t tabs = tll_init();
 
     while (true) {
-        int c = getopt_long(argc, argv, "+t:T:a:w:W:mFLD:s:HNo:Ed:l::veh", longopts, NULL);
+        int c = getopt_long(argc, argv, "+t:T:a:w:W:mFLD:s:HNo:B:Ed:l::veh", longopts, NULL);
         if (c == -1)
             break;
 
@@ -328,6 +332,24 @@ main(int argc, char *const *argv)
         case 'E':
             client_environment = true;
             break;
+
+        case 'B': {
+            /* Comma separated list; each entry "[N:]command" - entries
+             * without a numeric prefix are hidden tabs */
+            char *copy = xstrdup(optarg);
+            char *saveptr = NULL;
+            for (char *tok = strtok_r(copy, ",", &saveptr);
+                 tok != NULL;
+                 tok = strtok_r(NULL, ",", &saveptr))
+            {
+                if (!push_string(&tabs, tok, &total_len)) {
+                    free(copy);
+                    goto err;
+                }
+            }
+            free(copy);
+            break;
+        }
 
         case 'd': {
             int lvl = log_level_from_string(optarg);
@@ -474,6 +496,7 @@ main(int argc, char *const *argv)
     const size_t cwd_len = strlen(cwd) + 1;
     const size_t override_count = tll_length(overrides);
     const size_t env_count = tll_length(envp);
+    const size_t tab_count = tll_length(tabs);
 
     const struct client_data data = {
         .hold = hold,
@@ -484,6 +507,7 @@ main(int argc, char *const *argv)
         .override_count = override_count,
         .argc = argc,
         .env_count = env_count,
+        .tab_count = tab_count,
     };
 
     /* Total packet length, not (yet) including argv[] */
@@ -509,7 +533,8 @@ main(int argc, char *const *argv)
         token_len >= 1 << (8 * sizeof(data.token_len)) ||
         override_count > (size_t)(unsigned int)data.override_count ||
         argc > (int)(unsigned int)data.argc ||
-        env_count > (size_t)(unsigned int)data.env_count)
+        env_count > (size_t)(unsigned int)data.env_count ||
+        tab_count > (size_t)(unsigned int)data.tab_count)
     {
         LOG_ERR("size overflow");
         goto err;
@@ -549,6 +574,10 @@ main(int argc, char *const *argv)
 
     /* Send environment */
     if (!send_string_list(fd, &envp))
+        goto err;
+
+    /* Send extra tabs */
+    if (!send_string_list(fd, &tabs))
         goto err;
 
     struct sigaction sa_int = {.sa_handler = &sigint_handler};
@@ -618,6 +647,7 @@ main(int argc, char *const *argv)
 
 err:
     free_string_list(&envp);
+    free_string_list(&tabs);
     free_string_list(&overrides);
     free(cargv);
     free(_cwd);
