@@ -4001,6 +4001,13 @@ grid_render(struct terminal *term)
     if (term->shutdown.in_progress)
         return;
 
+    /* Background tabs are normally not rendered, but a refresh may
+     * still be pending (e.g. queued before the tab was compressed) -
+     * the compressed grid has no rows to render. Rendering one would
+     * also decompress it, defeating the whole point. */
+    if (grid_is_compressed(&term->normal) || grid_is_compressed(&term->alt))
+        return;
+
     struct timespec start_time;
     struct timespec start_wait_preapply = {0}, stop_wait_preapply = {0};
     struct timespec start_double_buffering = {0}, stop_double_buffering = {0};
@@ -5352,6 +5359,16 @@ render_resize(struct terminal *term, int width, int height, uint8_t opts)
 
     /* Drop out of URL mode */
     urls_reset(term);
+
+    /* A compressed (background tab) grid cannot be resized in place:
+     * decompress first. Compression is re-armed by the shrink timer
+     * on the next focus-out, so nothing is lost. */
+    if (grid_is_compressed(&term->normal) && !grid_decompress(&term->normal)) {
+        LOG_ERR("failed to decompress grid on resize");
+    }
+    if (grid_is_compressed(&term->alt) && !grid_decompress(&term->alt)) {
+        LOG_ERR("failed to decompress alt grid on resize");
+    }
 
     LOG_DBG("resized: size=%dx%d (scale=%.2f)", width, height, term->scale);
     term->width = width;

@@ -52,7 +52,7 @@
 
 #define PTMX_TIMING 0
 
-static void term_shrink_scrollback(struct terminal *term);
+static void term_compress_scrollback(struct terminal *term);
 
 static void
 enqueue_data_for_slave(const void *data, size_t len, size_t offset,
@@ -275,6 +275,15 @@ fdm_ptmx(struct fdm *fdm, int fd, int events, void *data)
         return true;
     }
 
+    /* PTY output is about to be fed into the grid: a compressed
+     * background tab must be decompressed first. */
+    if (grid_is_compressed(&term->normal) && !grid_decompress(&term->normal)) {
+        LOG_ERR("failed to decompress normal grid on PTY output");
+    }
+    if (grid_is_compressed(&term->alt) && !grid_decompress(&term->alt)) {
+        LOG_ERR("failed to decompress alt grid on PTY output");
+    }
+
     uint8_t buf[24 * 1024];
     const size_t max_iterations = !hup ? 10 : SIZE_MAX;
     bool got_output = false;
@@ -318,11 +327,10 @@ fdm_ptmx(struct fdm *fdm, int fd, int events, void *data)
             render_refresh_tab_bar(term->window);
         }
 
-        /* Don't shrink the scrollback while the tab is still
-         * producing output: push the deadline out by another
-         * shrink_after_ms. No-op unless the tab is in the background
-         * (the timer is disarmed otherwise) */
-        term_shrink_scrollback_maybe(term);
+        /* Don't compress while the tab is still producing output: push
+         * the deadline out by another compress_after_ms. No-op unless the
+         * tab is in the background (the timer is disarmed otherwise) */
+        term_compress_scrollback_maybe(term);
     }
 
     if (!term->render.app_sync_updates.enabled) {
@@ -469,16 +477,16 @@ fdm_flash(struct fdm *fdm, int fd, int events, void *data)
 }
 
 /*
- * Background tab scrollback shrinking timer. Never armed for the
+ * Background tab scrollback compression timer. Never armed for the
  * active tab; armed from term_visual_focus_out() and tab_deactivated(),
  * and re-armed on PTY output (fdm_ptmx). The callback and the tab
  * activation path both run in the main event loop, so the two cannot
  * race: the timer either fires while the tab is still in the
  * background (and the grid is shrunk), or it has been disarmed by
- * term_shrink_scrollback_maybe() during tab_activate().
+ * term_compress_scrollback_maybe() during tab_activate().
  */
 static bool
-fdm_shrink_scrollback(struct fdm *fdm, int fd, int events, void *data)
+fdm_compress_scrollback(struct fdm *fdm, int fd, int events, void *data)
 {
     if (events & EPOLLHUP)
         return false;
@@ -486,17 +494,17 @@ fdm_shrink_scrollback(struct fdm *fdm, int fd, int events, void *data)
     struct terminal *term = data;
     uint64_t expiration_count;
     ssize_t ret = read(
-        term->shrink_fd, &expiration_count, sizeof(expiration_count));
+        term->compress_fd, &expiration_count, sizeof(expiration_count));
 
     if (ret < 0) {
         if (errno == EAGAIN)
             return true;
 
-        LOG_ERRNO("failed to read scrollback shrink timer");
+        LOG_ERRNO("failed to read scrollback compress timer");
         return false;
     }
 
-    term_shrink_scrollback(term);
+    term_compress_scrollback(term);
     return true;
 }
 
@@ -1290,7 +1298,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
     int title_update_fd = -1;
     int icon_update_fd = -1;
     int app_id_update_fd = -1;
-    int shrink_fd = -1;
+    int compress_fd = -1;
 
     struct terminal *term = malloc(sizeof(*term));
     if (unlikely(term == NULL)) {
@@ -1338,9 +1346,9 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         goto close_fds;
     }
 
-    if ((shrink_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)) < 0)
+    if ((compress_fd = timerfd_create(CLOCK_MONOTONIC, TFD_CLOEXEC | TFD_NONBLOCK)) < 0)
     {
-        LOG_ERRNO("failed to create scrollback shrink timer FD");
+        LOG_ERRNO("failed to create scrollback compress timer FD");
         goto close_fds;
     }
 
@@ -1377,7 +1385,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         !fdm_add(fdm, title_update_fd, EPOLLIN, &fdm_title_update_timeout, term) ||
         !fdm_add(fdm, icon_update_fd, EPOLLIN, &fdm_icon_update_timeout, term) ||
         !fdm_add(fdm, app_id_update_fd, EPOLLIN, &fdm_app_id_update_timeout, term) ||
-        !fdm_add(fdm, shrink_fd, EPOLLIN, &fdm_shrink_scrollback, term))
+        !fdm_add(fdm, compress_fd, EPOLLIN, &fdm_compress_scrollback, term))
     {
         goto err;
     }
@@ -1423,7 +1431,7 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
         .scale = 1.,
         .scale_before_unmap = -1,
         .flash = {.fd = flash_fd},
-        .shrink_fd = shrink_fd,
+        .compress_fd = compress_fd,
         .blink = {.fd = -1},
         .vt = {
             .state = 0,  /* STATE_GROUND */
@@ -1464,8 +1472,10 @@ term_init(const struct config *conf, struct fdm *fdm, struct reaper *reaper,
                 .fd = -1,
             },
         },
-        .normal = {.scroll_damage = tll_init(), .sixel_images = tll_init()},
-        .alt = {.scroll_damage = tll_init(), .sixel_images = tll_init()},
+        .normal = {.scroll_damage = tll_init(), .sixel_images = tll_init(),
+                   .term = term},
+        .alt = {.scroll_damage = tll_init(), .sixel_images = tll_init(),
+                .term = term},
         .grid = &term->normal,
         .composed = NULL,
         .alt_scrolling = conf->mouse.alternate_scroll_mode,
@@ -1619,9 +1629,9 @@ err:
 close_fds:
     close(ptmx);
     fdm_del(fdm, flash_fd);
-    if (shrink_fd >= 0) {
-        fdm_del(fdm, shrink_fd);
-        close(shrink_fd);
+    if (compress_fd >= 0) {
+        fdm_del(fdm, compress_fd);
+        close(compress_fd);
     }
     fdm_del(fdm, delay_lower_fd);
     fdm_del(fdm, delay_upper_fd);
@@ -1970,10 +1980,10 @@ term_destroy(struct terminal *term)
     fdm_del(term->fdm, term->cursor_blink.fd);
     fdm_del(term->fdm, term->blink.fd);
     fdm_del(term->fdm, term->flash.fd);
-    if (term->shrink_fd >= 0) {
-        fdm_del(term->fdm, term->shrink_fd);
-        close(term->shrink_fd);
-        term->shrink_fd = -1;
+    if (term->compress_fd >= 0) {
+        fdm_del(term->fdm, term->compress_fd);
+        close(term->compress_fd);
+        term->compress_fd = -1;
     }
     fdm_del(term->fdm, term->ptmx);
     if (term->shutdown.terminate_timeout_fd >= 0)
@@ -2932,6 +2942,7 @@ UNITTEST
             .rows = xcalloc(scrollback_rows, sizeof(term.normal.rows[0])),
             .num_rows = scrollback_rows,
             .num_cols = cols,
+            .term = &term,
         },
         .grid = &term.normal,
         .selection = {
@@ -3462,10 +3473,10 @@ term_visual_focus_out(struct terminal *term)
     term_cursor_blink_update(term);
     render_refresh_csd(term);
 
-    /* Window-level focus-out: start the scrollback-shrink countdown
+    /* Window-level focus-out: start the scrollback-compress countdown
      * (no-op if the tab is already in the background - tab_deactivated()
      * armed it then) */
-    term_shrink_scrollback_maybe(term);
+    term_compress_scrollback_maybe(term);
 }
 
 /*
@@ -3482,12 +3493,12 @@ term_visual_focus_out(struct terminal *term)
  * that must not be shrunk).
  */
 void
-term_shrink_scrollback_maybe(struct terminal *term)
+term_compress_scrollback_maybe(struct terminal *term)
 {
-    if (term->conf->scrollback.shrink_after_ms == 0)
+    if (term->conf->scrollback.compress_after_ms == 0)
         return;  /* Disabled */
 
-    if (term->shrink_fd < 0)
+    if (term->compress_fd < 0)
         return;
 
     /* Only background tabs; the active tab is never armed */
@@ -3504,80 +3515,68 @@ term_shrink_scrollback_maybe(struct terminal *term)
 
     const struct itimerspec timer = {
         .it_value = {
-            .tv_sec = term->conf->scrollback.shrink_after_ms / 1000,
-            .tv_nsec = (term->conf->scrollback.shrink_after_ms % 1000) * 1000000,
+            .tv_sec = term->conf->scrollback.compress_after_ms / 1000,
+            .tv_nsec = (term->conf->scrollback.compress_after_ms % 1000) * 1000000,
         },
     };
 
-    if (timerfd_settime(term->shrink_fd, 0, &timer, NULL) < 0)
-        LOG_ERRNO("failed to arm scrollback shrink timer");
+    if (timerfd_settime(term->compress_fd, 0, &timer, NULL) < 0)
+        LOG_ERRNO("failed to arm scrollback compress timer");
 }
 
 /*
- * FDM timer callback: when the shrink countdown expires, do the
- * actual shrink. Only ever armed for background tabs; see
- * term_shrink_scrollback_maybe().
+ * Compress the scrollback of a background tab, to cap its memory
+ * usage (the rows are by far the largest allocation of an idle
+ * terminal). Runs after term_shrink_scrollback() in the same timer
+ * callback; like the shrink, it is only ever triggered for background
+ * tabs whose PTY has been quiet for compress_after_ms.
+ *
+ * Decompression happens transparently when the tab is activated
+ * (tab_activate), when PTY output arrives (fdm_ptmx), or when the
+ * tab is resized (render_resize).
  */
 static void
-term_shrink_scrollback(struct terminal *term)
+term_compress_scrollback(struct terminal *term)
 {
-    if (term->conf->scrollback.shrink_after_ms == 0)
+    if (term->conf->scrollback.compress_after_ms == 0)
         return;  /* Disabled */
 
     /* Defensive; the timer is disarmed on activation */
     if (term->window == NULL || term->window->term == term)
         return;
 
-    /* Only the normal grid holds scrollback */
-    if (term->grid != &term->normal)
-        return;
+    /* Both grids may hold scrollback-relevant state (the alt grid
+     * holds the screen when an application switched to it); compress
+     * whichever grid is currently inactive-cheaply: compress both,
+     * the active one is decompressed on activation anyway. But the
+     * *current* grid is the one with scrollback; compress both for
+     * simplicity. */
+    if (grid_is_compressed(&term->normal) && grid_is_compressed(&term->alt))
+        return;  /* Already compressed */
 
+    /* Same mode guards as the shrink: these use the grid via the
+     * render path */
     if (term->is_searching || urls_mode_is_active(term) ||
         term->interactive_resizing.grid != NULL)
     {
         return;
     }
 
-    /*
-     * How much history to keep. Never more than the configured
-     * scrollback, and never less than one grid slot. The grid is
-     * allocated with a power-of-two row count (see render.c's
-     * resize logic), and the same formula is used here.
-     */
-    const size_t scrollback = term->render.scrollback_lines;
-    size_t keep = min(term->conf->scrollback.shrink_keep_lines, scrollback);
-    keep = max(keep, (size_t)1);
-
-    /* Same as render.c: smallest power of two >= keep + screen rows */
-    const int need = (int)keep + term->rows;
-    const int target_rows = 1 << (32 - __builtin_clz(need));
-
-    if (term->normal.num_rows <= target_rows)
-        return;  /* Already small enough; keep is idempotent */
-
-    LOG_DBG("scrollback shrink: %d rows -> %d rows "
-            "(keeping %zu history lines)",
-            term->normal.num_rows, target_rows, keep);
+    /* Note: unlike the shrink, this does NOT require
+     * term->grid == &term->normal - the alt grid is compressed too */
+    grid_compress(&term->normal);
+    grid_compress(&term->alt);
 
     /*
-     * Resize the grid, reflowing the content. The rows that don't
-     * fit are dropped from the oldest end, which is exactly the
-     * "keep the most recent history" semantics. Selection tracking
-     * points are passed so the selection is clamped, not corrupted.
+     * free() alone does not return memory to the kernel (RSS stays
+     * unchanged); force glibc to release the freed arena pages.
      */
-    struct coord *const tracking_points[] = {
-        &term->selection.coords.start,
-        &term->selection.coords.end,
-    };
+    malloc_trim(0);
 
-    grid_resize_and_reflow(
-        &term->normal, term, target_rows, term->cols,
-        term->rows, term->rows,
-        term->selection.coords.end.row >= 0 ? ALEN(tracking_points) : 0,
-        tracking_points);
-
-    /* The viewport may have scrolled away; pin it to the bottom */
-    term->normal.view = term->normal.offset;
+    LOG_INFO("scrollback compress: term=%p normal=%d alt=%d",
+            (void *)term,
+            term->normal.compressed != NULL,
+            term->alt.compressed != NULL);
 }
 
 void

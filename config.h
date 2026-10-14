@@ -349,11 +349,12 @@ struct config {
         } scrollbar;
         uint16_t scrollbar_width;
 
-        /* Background-tab scrollback shrinking: after shrink_after_ms
-         * without PTY output while unfocused, shrink the grid down to
-         * "screen + shrink_keep_lines history lines". 0 disables. */
-        size_t shrink_keep_lines;
-        uint32_t shrink_after_ms;
+        /* Background-tab scrollback compression: after
+         * compress_after_ms without PTY output while unfocused, the
+         * whole grid is zstd-compressed and its rows freed. The grid
+         * is decompressed transparently when the tab is activated or
+         * when PTY output arrives. 0 disables. */
+        uint32_t compress_after_ms;
     } scrollback;
 
     struct {

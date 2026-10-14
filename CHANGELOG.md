@@ -118,11 +118,12 @@
   - `tweak.sixel-max-memory` (default 64, MiB): total budget for
     decoded sixel pixel data per tab; the oldest images are evicted
     when insertion would exceed the budget.
-  - `scrollback.shrink-keep` (default 200) and
-    `scrollback.shrink-after` (default 30000, ms): a background tab
-    idle+unfocused for `shrink-after` ms has its scrollback shrunk to
-    the screen plus `shrink-keep` most recent history lines, to cap
-    its memory usage. `shrink-after=0` disables it.
+  - `scrollback.compress-after` (default 10000, ms): a background tab
+    idle+unfocused for `compress-after` ms has its whole grid
+    (scrollback + screen, both normal and alt) zstd-compressed and the
+    row storage freed, to cap its memory usage. The grid is
+    transparently decompressed when the tab is activated, when the PTY
+    produces output, or on resize. `compress-after=0` disables it.
   - Tabs now **share** their configuration via reference counting
     instead of each tab deep-cloning it; a footclient's per-client
     overrides still get a private clone.

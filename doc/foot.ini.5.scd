@@ -912,6 +912,16 @@ xdgtoken=95ebdfe56e4f47ddb5bba9d7dc3a2c35
 	string. This option is ignored if
 	*indicator-position=none*. Default: _empty string_.
 
+*compress-after*
+	Background-tab memory optimization. When a tab has been both
+	unfocused and without terminal output for this many milliseconds,
+	its entire grid (scrollback and screen, on both the normal and the
+	alternate screen) is zstd-compressed into a single buffer and the
+	row storage is freed. The grid is decompressed transparently when
+	the tab is activated, when the terminal produces output, or when
+	it is resized; no history is ever lost. Setting it to _0_
+	disables compression. Default: _10000_.
+
 # SECTION: url
 
 Note that you can also add custom regular expressions, see the 'regex'

@@ -229,6 +229,21 @@ struct grid {
     int view;
 
     /*
+     * Owning terminal, set at term_init(). Needed by
+     * grid_decompress() to invalidate the renderer's cross-frame row
+     * pointer cache (render.last_cursor.row) after decompression.
+     */
+    struct terminal *term;
+
+    /*
+     * Non-NULL while the grid is zstd-compressed (background-tab
+     * memory saving, see grid_compress() in grid.c). All rows are
+     * freed and every member except num_rows/num_cols is stale until
+     * grid_decompress() restores them.
+     */
+    struct compressed_grid *compressed;
+
+    /*
      * Note: the cursor (not the *saved* cursor) could most likely be
      * global state in the term struct.
      *
@@ -619,13 +634,11 @@ struct terminal {
     } flash;
 
     /*
-     * Shrinks the scrollback of *background* tabs, to cap their
-     * memory usage. Armed while the tab is unfocused, and
-     * re-armed on PTY output (in fdm_ptmx), so that it only
-     * expires after shrink_after_ms of inactivity. See
-     * term_shrink_scrollback().
+     * Background-tab scrollback compression timer: fires after
+     * compress_after_ms of PTY inactivity. See
+     * term_compress_scrollback().
      */
-    int shrink_fd;
+    int compress_fd;
 
     struct {
         enum { BLINK_ON, BLINK_OFF } state;
@@ -1064,7 +1077,7 @@ bool term_ptmx_pause(struct terminal *term);
 bool term_ptmx_resume(struct terminal *term);
 
 /* See terminal.c: arms the timer only for background tabs */
-void term_shrink_scrollback_maybe(struct terminal *term);
+void term_compress_scrollback_maybe(struct terminal *term);
 
 void term_enable_size_notifications(struct terminal *term);
 void term_disable_size_notifications(struct terminal *term);

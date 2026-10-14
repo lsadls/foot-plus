@@ -154,6 +154,7 @@ wayland_cursor = dependency('wayland-cursor')
 xkb = dependency('xkbcommon', version: '>=1.6.0')
 fontconfig = dependency('fontconfig')
 utf8proc = dependency('libutf8proc', required: get_option('grapheme-clustering'))
+zstd = dependency('libzstd', version: '>=1.4.0')
 
 if utf8proc.found()
   add_project_arguments('-DFOOT_GRAPHEME_CLUSTERING=1', language: 'c')
@@ -347,7 +348,7 @@ executable(
   'xkbcommon-vmod.h',
   srgb_funcs, wl_proto_src + wl_proto_headers, version,
   dependencies: [math, threads, libepoll, pixman, wayland_client, wayland_cursor, xkb, fontconfig, utf8proc,
-                 tllist, fcft],
+                 tllist, fcft, zstd],
   link_with: pgolib,
   install: true)
 

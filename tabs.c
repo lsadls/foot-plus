@@ -12,6 +12,7 @@
 
 #define LOG_MODULE "tabs"
 #define LOG_ENABLE_DBG 0
+#include "grid.h"
 #include "log.h"
 #include "char32.h"
 #include "config.h"
@@ -139,7 +140,7 @@ switch_seat_focus(struct terminal *old, struct terminal *new)
 
     /*
      * The old tab is now in the background: start its
-     * scrollback-shrink countdown. tab_deactivated() is a no-op if
+     * scrollback-compress countdown. tab_deactivated() is a no-op if
      * it already armed the timer (e.g. when the whole window lost
      * focus earlier); the countdown is re-armed from scratch.
      */
@@ -158,13 +159,23 @@ tab_activate(struct terminal *new)
 
     LOG_DBG("activating tab %p (previous: %p)", (void *)new, (void *)old);
 
-    /* Disarm the new tab's scrollback-shrink timer before anything
+    /* Decompress the tab's grids before anything else: from this
+     * point on it is in the foreground, and its grid will be
+     * rendered/written to */
+    if (grid_is_compressed(&new->normal) && !grid_decompress(&new->normal)) {
+        LOG_ERR("failed to decompress normal grid on tab activation");
+    }
+    if (grid_is_compressed(&new->alt) && !grid_decompress(&new->alt)) {
+        LOG_ERR("failed to decompress alt grid on tab activation");
+    }
+
+    /* Disarm the new tab's scrollback-compress timer before anything
      * else: from this point on it is in the foreground, and its
      * history must not be dropped */
-    if (new->shrink_fd >= 0) {
+    if (new->compress_fd >= 0) {
         const struct itimerspec disarm = {{0}};
-        if (timerfd_settime(new->shrink_fd, 0, &disarm, NULL) < 0)
-            LOG_ERRNO("failed to disarm scrollback shrink timer");
+        if (timerfd_settime(new->compress_fd, 0, &disarm, NULL) < 0)
+            LOG_ERRNO("failed to disarm scrollback compress timer");
     }
 
     new->tab.activated = ++win->tab_activations;
@@ -232,9 +243,9 @@ tab_deactivated(struct terminal *term)
     /*
      * The window's active tab has just changed (or focus moved to
      * another tab): this tab is now in the background, so start its
-     * scrollback-shrink countdown.
+     * scrollback-compress countdown.
      */
-    term_shrink_scrollback_maybe(term);
+    term_compress_scrollback_maybe(term);
 }
 
 struct terminal *
