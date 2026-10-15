@@ -6,13 +6,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/timerfd.h>
 
 #include <xkbcommon/xkbcommon-compose.h>
 
 #define LOG_MODULE "tabs"
 #define LOG_ENABLE_DBG 0
-#include "grid.h"
 #include "log.h"
 #include "char32.h"
 #include "config.h"
@@ -137,15 +135,6 @@ switch_seat_focus(struct terminal *old, struct terminal *new)
             term_kbd_focus_out(old);
         term_visual_focus_out(old);
     }
-
-    /*
-     * The old tab is now in the background: start its
-     * scrollback-compress countdown. tab_deactivated() is a no-op if
-     * it already armed the timer (e.g. when the whole window lost
-     * focus earlier); the countdown is re-armed from scratch.
-     */
-    if (!old->shutdown.in_progress && old != new)
-        tab_deactivated(old);
 }
 
 void
@@ -158,25 +147,6 @@ tab_activate(struct terminal *new)
         return;
 
     LOG_DBG("activating tab %p (previous: %p)", (void *)new, (void *)old);
-
-    /* Decompress the tab's grids before anything else: from this
-     * point on it is in the foreground, and its grid will be
-     * rendered/written to */
-    if (grid_is_compressed(&new->normal) && !grid_decompress(&new->normal)) {
-        LOG_ERR("failed to decompress normal grid on tab activation");
-    }
-    if (grid_is_compressed(&new->alt) && !grid_decompress(&new->alt)) {
-        LOG_ERR("failed to decompress alt grid on tab activation");
-    }
-
-    /* Disarm the new tab's scrollback-compress timer before anything
-     * else: from this point on it is in the foreground, and its
-     * history must not be dropped */
-    if (new->compress_fd >= 0) {
-        const struct itimerspec disarm = {{0}};
-        if (timerfd_settime(new->compress_fd, 0, &disarm, NULL) < 0)
-            LOG_ERRNO("failed to disarm scrollback compress timer");
-    }
 
     new->tab.activated = ++win->tab_activations;
     new->tab.attention = false;
@@ -231,21 +201,6 @@ tab_activate(struct terminal *new)
         if (it->item.mouse_focus == new)
             term_xcursor_update_for_seat(new, &it->item);
     }
-}
-
-void
-tab_deactivated(struct terminal *term)
-{
-    xassert(term != NULL);
-    xassert(term->window != NULL);
-    xassert(term->window->term != term);
-
-    /*
-     * The window's active tab has just changed (or focus moved to
-     * another tab): this tab is now in the background, so start its
-     * scrollback-compress countdown.
-     */
-    term_compress_scrollback_maybe(term);
 }
 
 struct terminal *

@@ -1342,9 +1342,6 @@ parse_section_scrollback(struct context *ctx)
     else if (streq(key, "scrollbar-width"))
         return value_to_uint16(ctx, 10, &conf->scrollback.scrollbar_width);
 
-    else if (streq(key, "compress-after"))
-        return value_to_uint32(ctx, 10, &conf->scrollback.compress_after_ms);
-
     else {
         LOG_CONTEXTUAL_ERR("not a valid option: %s", key);
         return false;
@@ -3811,7 +3808,6 @@ config_load(struct config *conf, const char *conf_path,
             .multiplier = 3.,
             .scrollbar = SCROLLBAR_NEVER,
             .scrollbar_width = 8,
-            .compress_after_ms = 10000,
         },
         .colors_dark = {
             .fg = default_foreground,

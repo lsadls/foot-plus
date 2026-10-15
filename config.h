@@ -348,13 +348,6 @@ struct config {
             SCROLLBAR_ALWAYS,
         } scrollbar;
         uint16_t scrollbar_width;
-
-        /* Background-tab scrollback compression: after
-         * compress_after_ms without PTY output while unfocused, the
-         * whole grid is zstd-compressed and its rows freed. The grid
-         * is decompressed transparently when the tab is activated or
-         * when PTY output arrives. 0 disables. */
-        uint32_t compress_after_ms;
     } scrollback;
 
     struct {

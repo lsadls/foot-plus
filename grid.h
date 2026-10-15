@@ -7,26 +7,6 @@
 struct grid *grid_snapshot(const struct grid *grid);
 void grid_free(struct grid *grid);
 
-/*
- * Whole-grid zstd compression, used to cap the memory usage of
- * background tabs. Compresses all rows + grid scalar state into a
- * single blob, frees the rows, and marks the grid compressed
- * (grid->compressed != NULL). The grid must be decompressed with
- * grid_decompress() before any other access.
- *
- * Sixel images are NOT compressed; they keep living in
- * grid->sixel_images and remain bounded by tweak.sixel-max-memory.
- *
- * On decompression errors the grid is left unusable (rows == NULL);
- * the caller must treat this as a lost tab and shut it down.
- */
-void grid_compress(struct grid *grid);
-bool grid_decompress(struct grid *grid);
-static inline bool grid_is_compressed(const struct grid *grid)
-{
-    return grid->compressed != NULL;
-}
-
 void grid_swap_row(struct grid *grid, int row_a, int row_b);
 struct row *grid_row_alloc(int cols, bool initialize);
 void grid_row_free(struct row *row);
