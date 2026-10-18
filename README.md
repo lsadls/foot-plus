@@ -25,8 +25,13 @@ tabs and other stuff, based on foot 1.28.0.
 >   move tab (or drag it with the mouse)
 > - Tab bar: click to switch, double-click to rename, middle-click to
 >   close, scroll to cycle
-> - Labels show the tab's foreground process; an inactive tab with pending
->   output gets a muted background fill; a `• ` prefix marks attention
+> - Labels show the tab's foreground process; the number in front of it is
+>   the tab's position among visible tabs — a fixed index that does not
+>   restart at 1 when the bar scrolls to the overflowing tabs
+> - An inactive tab that produced output gets a muted background fill; a
+>   `• ` prefix marks attention. Output within the first
+>   `output-grace` ms after activation is treated as the tab's *startup*
+>   output (e.g. a shell printing its prompt) and does not trigger the fill
 > - Unlimited tabs (the old 9-tab limit is gone); new tabs open in `$HOME`
 > - Extra tabs on the command line — `--tab` (foot) / `-B` (footclient)
 >
@@ -64,6 +69,9 @@ tabs and other stuff, based on foot 1.28.0.
 >
 > [security]
 > # confirm-paste=unsafe          # never|unsafe|multiline
+>
+> [tweak]
+> # output-grace=1500             # ms; output after activation that still counts as startup
 > ```
 >
 > New key bindings:

@@ -312,8 +312,23 @@ fdm_ptmx(struct fdm *fdm, int fd, int events, void *data)
         if (term->window != NULL && term->window->term != term &&
             !term->tab.output_pending)
         {
-            term->tab.output_pending = true;
-            render_refresh_tab_bar(term->window);
+            /* A tab that was just activated is still starting up (e.g.
+             * `zsh` has not printed its prompt yet). Its output is the
+             * foreground program's startup output, not background
+             * output, so don't mark it - the user may have switched away
+             * before the program was up. */
+            struct timespec now;
+            clock_gettime(CLOCK_MONOTONIC, &now);
+
+            struct timespec since;
+            timespec_sub(&now, &term->tab.activated_at, &since);
+            const uint64_t since_ns =
+                (uint64_t)since.tv_sec * 1000 * 1000 * 1000 + since.tv_nsec;
+
+            if (since_ns >= term->conf->tweak.output_grace_ns) {
+                term->tab.output_pending = true;
+                render_refresh_tab_bar(term->window);
+            }
         }
     }
 

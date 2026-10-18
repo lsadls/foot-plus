@@ -2256,6 +2256,19 @@ any of these options.
 	
 	Default: _yes_
 
+*output-grace*
+	Time window, in milliseconds, after a tab is activated during
+	which output from that tab does not mark it as having produced
+	background output (no dimmed background in the tab bar).
+
+	This exists for the case where tabs are created or switched
+	quickly: the foreground program (e.g. a shell) may not have
+	finished starting up, and its startup output - printed after the
+	user already switched away - would otherwise be indistinguishable
+	from an actual background job writing output.
+
+	Default: _1500_
+
 *max-shm-pool-size-mb*
 	This option controls the amount of virtual address space used by
 	the pixmap memory to which the terminal screen content is

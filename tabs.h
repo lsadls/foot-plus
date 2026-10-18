@@ -115,10 +115,11 @@ void tab_bar_layout_get(struct wl_window *win, int width,
 void tab_bar_tab_extent(
     struct wl_window *win, int width, size_t idx, int *x0, int *x1);
 
-/* Slot width of the tab with visible index 'vidx', clamped to the
- * configured maximum and the tab region width */
+/* Slot width of 'tab', clamped to the configured maximum and the tab
+ * region width. The label number it is measured with is global (index
+ * among non-hidden tabs), not relative to the scrolled window */
 int tab_bar_tab_width(struct wl_window *win, int tabs_width,
-                      const struct terminal *tab, size_t vidx);
+                      const struct terminal *tab);
 
 int tab_bar_tab_at(struct wl_window *win, int x);
 int tab_bar_tabs_width(struct wl_window *win, int width);

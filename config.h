@@ -473,6 +473,10 @@ struct config {
         bool damage_whole_window;
         uint32_t delayed_render_lower_ns;
         uint32_t delayed_render_upper_ns;
+        /* Output produced by a newly activated tab within this window
+         * (ns) counts as startup output, not background output. See
+         * terminal::tab.activated_at */
+        uint64_t output_grace_ns;
         off_t max_shm_pool_size;
         float box_drawing_base_thickness;
         bool box_drawing_solid_shades;

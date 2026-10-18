@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include <xkbcommon/xkbcommon-compose.h>
@@ -149,6 +150,7 @@ tab_activate(struct terminal *new)
     LOG_DBG("activating tab %p (previous: %p)", (void *)new, (void *)old);
 
     new->tab.activated = ++win->tab_activations;
+    clock_gettime(CLOCK_MONOTONIC, &new->tab.activated_at);
     new->tab.attention = false;
     new->tab.output_pending = false;
     tab_update_comm(new);
@@ -910,16 +912,33 @@ tab_bar_status_width(struct wl_window *win, int width)
     return text_width;
 }
 
-/* Width of a single tab's label, including its margins. 'vidx' is the
- * tab's position among the visible tabs (hidden tabs are unnamed and
- * not shown anyway) */
+/* Number of non-hidden tabs before 'tab' in 'win' + 1: the label number
+ * shown in the bar. It is independent of the scrolled-into-view window
+ * (hidden tabs don't occupy a slot and aren't counted) */
+static size_t
+tab_bar_number(const struct wl_window *win, const struct terminal *tab)
+{
+    size_t number = 0;
+    tll_foreach(win->tabs, it) {
+        if (it->item->tab.hidden)
+            continue;
+        number++;
+        if (it->item == tab)
+            break;
+    }
+    return number;
+}
+
+/* Width of a single tab's label, including its margins. The number in
+ * the label is the tab's global visible index (see tab_bar_number()),
+ * never its position inside the scrolled window */
 static int
 tab_bar_tab_label_width(
-    const struct wl_window *win, const struct terminal *tab, size_t vidx)
+    const struct wl_window *win, const struct terminal *tab)
 {
     char *title = xasprintf(
         "%s%zu:%s", tab->tab.attention ? "\u2022 " : "",
-        vidx + 1, tab_title(tab));
+        tab_bar_number(win, tab), tab_title(tab));
     char32_t *label = ambstoc32(title);
     free(title);
 
@@ -959,17 +978,16 @@ tab_bar_max_tab_width(struct wl_window *win, int tabs_width)
     return max(0, min(max_w, tabs_width));
 }
 
-/* Slot width of the tab with visible index 'vidx': its label width
- * (which includes one margin of padding), clamped to
- * [margin, min(configured max, tab region width)] */
+/* Slot width of 'tab': its label width (which includes one margin of
+ * padding), clamped to [margin, min(configured max, tab region width)] */
 int
 tab_bar_tab_width(struct wl_window *win, int tabs_width,
-                  const struct terminal *tab, size_t vidx)
+                  const struct terminal *tab)
 {
     const int margin = tab_bar_margin(win);
     const int max_w = max(margin, min(tab_bar_max_tab_width(win, tabs_width),
                                       tabs_width));
-    return max(margin, min(tab_bar_tab_label_width(win, tab, vidx), max_w));
+    return max(margin, min(tab_bar_tab_label_width(win, tab), max_w));
 }
 
 /* Hidden tabs don't occupy a slot in the bar; the boundaries of the
@@ -980,24 +998,14 @@ tab_bar_visible_range(struct wl_window *win, int width)
 {
     struct tab_bar_range r = {0, 0};
 
-    /* Locate the anchor: the active tab, or the first non-hidden one.
-     * Widths depend on the visible index, so track vidx during the
-     * scan. */
+    /* Locate the anchor: the active tab, or the first non-hidden one */
     __typeof__(win->tabs.head) anchor = NULL;
-    size_t anchor_vidx = 0;
-    {
-        size_t vidx = 0;
-        tll_foreach(win->tabs, it) {
-            if (it->item->tab.hidden)
-                continue;
-            if (anchor == NULL || it->item == win->term) {
-                anchor = it;
-                anchor_vidx = vidx;
-                if (it->item == win->term)
-                    break;
-            }
-            vidx++;
-        }
+    tll_foreach(win->tabs, it) {
+        if (it->item->tab.hidden)
+            continue;
+        anchor = it;
+        if (it->item == win->term)
+            break;
     }
 
     if (anchor == NULL) {
@@ -1009,9 +1017,8 @@ tab_bar_visible_range(struct wl_window *win, int width)
     const int bar_width = tab_bar_tabs_width(win, width);
     const int half = bar_width / 2;
 
-    int used = tab_bar_tab_width(win, bar_width, anchor->item, anchor_vidx);
+    int used = tab_bar_tab_width(win, bar_width, anchor->item);
     __typeof__(win->tabs.head) left = anchor, right = anchor;
-    size_t left_vidx = anchor_vidx, right_vidx = anchor_vidx;
 
     /* Expand around the anchor: fill the left half first, then the
      * full width to the right, then use up whatever is left on the
@@ -1022,13 +1029,11 @@ tab_bar_visible_range(struct wl_window *win, int width)
             left = prev;
             continue;
         }
-        const int w = tab_bar_tab_width(
-            win, bar_width, prev->item, left_vidx - 1u);
+        const int w = tab_bar_tab_width(win, bar_width, prev->item);
         if (used + w > half)
             break;
         used += w;
         left = prev;
-        left_vidx--;
     }
 
     while (right->next != NULL) {
@@ -1037,13 +1042,11 @@ tab_bar_visible_range(struct wl_window *win, int width)
             right = next;
             continue;
         }
-        const int w = tab_bar_tab_width(
-            win, bar_width, next->item, right_vidx + 1);
+        const int w = tab_bar_tab_width(win, bar_width, next->item);
         if (used + w > bar_width)
             break;
         used += w;
         right = next;
-        right_vidx++;
     }
 
     while (left->prev != NULL) {
@@ -1052,13 +1055,11 @@ tab_bar_visible_range(struct wl_window *win, int width)
             left = prev;
             continue;
         }
-        const int w = tab_bar_tab_width(
-            win, bar_width, prev->item, left_vidx - 1u);
+        const int w = tab_bar_tab_width(win, bar_width, prev->item);
         if (used + w > bar_width)
             break;
         used += w;
         left = prev;
-        left_vidx--;
     }
 
     /* Translate the boundary iterators back to full-list indices */
@@ -1097,19 +1098,17 @@ tab_bar_tab_extent(struct wl_window *win, int width, size_t idx,
      * tabs take no slot. */
     const int tabs_width = tab_bar_tabs_width(win, width);
     int x = 0;
-    size_t vidx = 0;
     for (size_t i = r.first; i <= idx; i++) {
         const struct terminal *tab = tab_at_index(win, i);
         if (tab->tab.hidden)
             continue;
-        const int w = tab_bar_tab_width(win, tabs_width, tab, vidx);
+        const int w = tab_bar_tab_width(win, tabs_width, tab);
         if (i == idx) {
             *x0 = x;
             *x1 = x + w;
             return;
         }
         x += w;
-        vidx++;
     }
 
     *x0 = *x1 = 0;
@@ -1144,17 +1143,15 @@ tab_bar_tab_at(struct wl_window *win, int x)
 
     /* Accumulate per-tab widths from the first visible tab */
     int px = 0;
-    size_t vidx = 0;
     for (size_t i = r.first; i <= r.last; i++) {
         const struct terminal *tab = tab_at_index(win, i);
         if (tab == NULL || tab->tab.hidden)
             continue;
 
-        const int w = tab_bar_tab_width(win, tabs_width, tab, vidx);
+        const int w = tab_bar_tab_width(win, tabs_width, tab);
         if (x >= px && x < px + w)
             return (int)i;
         px += w;
-        vidx++;
     }
 
     return -1;

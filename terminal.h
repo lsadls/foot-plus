@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>
 
 #include <threads.h>
 #include <semaphore.h>
@@ -586,6 +587,14 @@ struct terminal {
 
         /* Received output while in the background (not the active tab) */
         bool output_pending;
+
+        /* Monotonic time of the most recent activation. Output produced
+         * within output_grace_ns of it is the foreground program's
+         * startup output (e.g. a shell printing its prompt), not
+         * background output, and must not set output_pending. It can be
+         * observed "in the background" when the user switches away
+         * before the program has finished starting up. */
+        struct timespec activated_at;
 
         /* Hidden tab: not shown in the tab bar, not reached by
          * tab-next/tab-prev; reachable only via tab-goto-<name>

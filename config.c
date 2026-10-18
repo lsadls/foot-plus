@@ -3068,6 +3068,17 @@ parse_section_tweak(struct context *ctx)
         return true;
     }
 
+    else if (streq(key, "output-grace")) {
+        uint32_t ms;
+        if (!value_to_uint32(ctx, 10, &ms))
+            return false;
+
+        /* Still startup output of a freshly activated tab, and not
+         * background output, up to this many milliseconds */
+        conf->tweak.output_grace_ns = (uint64_t)ms * 1000 * 1000;
+        return true;
+    }
+
     else if (streq(key, "max-shm-pool-size-mb")) {
         uint32_t mb;
         if (!value_to_uint32(ctx, 10, &mb))
@@ -3884,6 +3895,7 @@ config_load(struct config *conf, const char *conf_path,
             .grapheme_width_method = GRAPHEME_WIDTH_DOUBLE,
             .delayed_render_lower_ns = 500000,         /* 0.5ms */
             .delayed_render_upper_ns = 16666666 / 2,   /* half a frame period (60Hz) */
+            .output_grace_ns = 1500ull * 1000 * 1000,  /* 1.5s */
             .max_shm_pool_size = 512 * 1024 * 1024,
             .render_timer = RENDER_TIMER_NONE,
             .damage_whole_window = false,

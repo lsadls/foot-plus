@@ -3373,8 +3373,10 @@ render_tab_bar(struct terminal *term)
     tab_bar_layout_get(win, width, &layout_range);
     const int tabs_width = tab_bar_tabs_width(win, width);
 
-    int x = 0;  /* accumulated x offset among visible tabs */
-    size_t vidx = 0;  /* position among visible tabs */
+    int x = 0;  /* accumulated x offset among drawn tabs */
+    /* Label number: index among non-hidden tabs. Independent of the
+     * scrolled window, so numbering doesn't restart at 1 after scrolling */
+    size_t number = 0;
     tll_foreach(win->tabs, it) {
         const struct terminal *tab = it->item;
         const bool active = tab == term;
@@ -3383,6 +3385,7 @@ render_tab_bar(struct terminal *term)
             idx++;
             continue;
         }
+        number++;
 
         /* Tabs before the first visible one were scrolled out of view
          * and must not shift the rest */
@@ -3394,10 +3397,9 @@ render_tab_bar(struct terminal *term)
         if (idx > layout_range.last)
             break;
 
-        const int w = tab_bar_tab_width(win, tabs_width, tab, vidx);
+        const int w = tab_bar_tab_width(win, tabs_width, tab);
         const int x0 = x, x1 = x + w;
         x = x1;
-        vidx++;
 
         if (!active && tab->tab.output_pending) {
             /* Produced output while in the background */
@@ -3424,7 +3426,7 @@ render_tab_bar(struct terminal *term)
         } else {
             char *title = xasprintf(
                 "%s%zu:%s", tab->tab.attention ? "\u2022 " : "",
-                vidx, tab_title(tab));
+                number, tab_title(tab));
             label = ambstoc32(title);
             free(title);
         }
